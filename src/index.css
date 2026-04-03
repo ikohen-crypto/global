@@ -1,0 +1,112 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color: #17212b;
+    background:
+      radial-gradient(circle at 20% 0%, rgba(238, 123, 90, 0.16), transparent 30%),
+      radial-gradient(circle at 85% 0%, rgba(216, 154, 43, 0.14), transparent 24%),
+      linear-gradient(180deg, #faf7f3 0%, #f5f0e8 42%, #eef3f0 100%);
+    color-scheme: light;
+  }
+
+  .dark {
+    color: #e7e2d8;
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.05), transparent 24%),
+      radial-gradient(circle at 82% 0%, rgba(238, 123, 90, 0.08), transparent 22%),
+      linear-gradient(180deg, #0f1114 0%, #09090b 100%);
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    background: inherit;
+    color: inherit;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  ::selection {
+    background: rgba(23, 53, 45, 0.18);
+    color: #17352d;
+  }
+}
+
+@layer components {
+  .card-surface {
+    @apply rounded-[28px] border border-white/70 bg-white/80 shadow-card backdrop-blur dark:border-stone-800/80 dark:bg-stone-900/90 dark:text-stone-100;
+  }
+
+  .field-control {
+    @apply w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-pine focus:ring-2 focus:ring-pine/10 dark:border-stone-700 dark:bg-stone-950 dark:text-stone-100 dark:placeholder:text-stone-500 dark:focus:border-gold dark:focus:ring-gold/15;
+  }
+
+  .soft-card {
+    @apply rounded-3xl border border-slate-200/80 bg-slate-50/75 dark:border-stone-800 dark:bg-stone-900/75;
+  }
+
+  .dark .card-surface {
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.42);
+  }
+
+  .dark [class*="bg-white"] {
+    background-color: rgb(17 17 18 / 0.96) !important;
+  }
+
+  .dark [class*="bg-slate-50"] {
+    background-color: rgb(23 23 23 / 0.96) !important;
+  }
+
+  .dark [class*="bg-slate-100"] {
+    background-color: rgb(39 39 42 / 0.92) !important;
+  }
+
+  .dark [class*="border-white"] {
+    border-color: rgb(39 39 42 / 1) !important;
+  }
+
+  .dark [class*="border-slate-100"] {
+    border-color: rgb(39 39 42 / 1) !important;
+  }
+
+  .dark [class*="text-slate-500"] {
+    color: rgb(161 161 170 / 1) !important;
+  }
+
+  .dark [class*="text-slate-400"] {
+    color: rgb(113 113 122 / 1) !important;
+  }
+
+  .animate-fade-up {
+    animation: fade-up 0.55s ease-out both;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

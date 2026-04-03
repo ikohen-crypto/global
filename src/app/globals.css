@@ -1,0 +1,62 @@
+@import "leaflet/dist/leaflet.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 194 80% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 180 84% 26%;
+    --primary-foreground: 180 100% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 40%;
+    --accent: 183 76% 92%;
+    --accent-foreground: 180 84% 18%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 180 84% 26%;
+  }
+
+  .dark {
+    --background: 215 46% 9%;
+    --foreground: 210 40% 98%;
+    --card: 218 33% 12%;
+    --card-foreground: 210 40% 98%;
+    --primary: 174 66% 44%;
+    --primary-foreground: 185 100% 8%;
+    --secondary: 217 32% 17%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 32% 17%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 180 36% 18%;
+    --accent-foreground: 180 80% 92%;
+    --border: 217 24% 22%;
+    --input: 217 24% 22%;
+    --ring: 174 66% 44%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    background-image: radial-gradient(circle at top left, rgba(45, 212, 191, 0.09), transparent 28%);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
