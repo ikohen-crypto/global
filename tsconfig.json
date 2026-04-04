@@ -34,13 +34,14 @@
     "components/**/*.tsx",
     "lib/**/*.ts",
     "lib/**/*.tsx",
+    "next-build/types/**/*.ts",
     "next-env.d.ts",
     "playwright.config.ts",
     "src/app/**/*.ts",
     "src/app/**/*.tsx",
     "tests/globalecon/**/*.ts",
     "tests/globalecon/**/*.tsx",
-    "next-build/types/**/*.ts"
+    ".next/types/**/*.ts"
   ],
   "exclude": [
     "node_modules",

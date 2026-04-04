@@ -51,6 +51,8 @@ export function NewsExplorer({
   locale: Locale;
   sourceLabels: Record<NewsSourceId, string>;
 }) {
+  const bucketForExplorer = (item: NewsItem) => `${item.signalType}:${item.sourceId}:${item.topics[0] ?? "general"}`;
+
   const copy = {
     en: {
       title: "Explore all stories",
@@ -92,8 +94,7 @@ export function NewsExplorer({
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-
-    return items.filter((item) => {
+    const matching = items.filter((item) => {
       if (source !== "all" && item.sourceId !== source) return false;
       if (signal !== "all" && item.signalType !== signal) return false;
       if (importance !== "all" && item.importance !== importance) return false;
@@ -116,6 +117,30 @@ export function NewsExplorer({
 
       return haystack.includes(normalizedQuery);
     });
+
+    const seeded: NewsItem[] = [];
+    const seenBuckets = new Set<string>();
+
+    for (const item of matching) {
+      const bucket = bucketForExplorer(item);
+      if (seenBuckets.has(bucket)) continue;
+      seeded.push(item);
+      seenBuckets.add(bucket);
+      if (seeded.length >= matching.length) break;
+    }
+
+    const perSource = new Map<NewsSourceId, number>();
+    const selected: NewsItem[] = [];
+
+    for (const item of [...seeded, ...matching]) {
+      if (selected.some((selectedItem) => selectedItem.id === item.id)) continue;
+      const sourceCount = perSource.get(item.sourceId) ?? 0;
+      if (source === "all" && sourceCount >= 4) continue;
+      selected.push(item);
+      perSource.set(item.sourceId, sourceCount + 1);
+    }
+
+    return selected;
   }, [importance, items, query, signal, source, topic]);
 
   const availableTopics = useMemo(

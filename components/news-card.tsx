@@ -52,18 +52,19 @@ export function NewsCard({ item, locale }: { item: NewsItem; locale: Locale }) {
   return (
     <Card className="h-full">
       <CardHeader className="space-y-2 pb-3">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="rounded-full border border-border px-2 py-0.5">{sourceLabel}</span>
+        <div className="flex items-start justify-between gap-3 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
             <Clock3 className="h-3 w-3" />
             {formatDate(item.publishedAt, locale)}
+          </span>
+          <span className="rounded-full border border-border px-2.5 py-0.5 text-[11px] font-semibold text-foreground/80">
+            {sourceLabel}
           </span>
         </div>
         <CardTitle className="text-lg leading-snug">{localizedTitle}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
-        <p className="line-clamp-2 text-sm text-muted-foreground">
-          {locale === "es" ? "Resumen: " : "Summary: "}
+        <p className="line-clamp-4 text-sm leading-6 text-muted-foreground">
           {localizedSummary}
         </p>
 

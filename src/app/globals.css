@@ -21,6 +21,7 @@
     --border: 214 32% 91%;
     --input: 214 32% 91%;
     --ring: 180 84% 26%;
+    --content-max-width: 74rem;
   }
 
   .dark {
@@ -56,6 +57,16 @@
 }
 
 @layer utilities {
+  .max-w-7xl {
+    max-width: min(var(--content-max-width), calc(100vw - 1.5rem));
+  }
+
+  @media (min-width: 640px) {
+    .max-w-7xl {
+      max-width: min(var(--content-max-width), calc(100vw - 3rem));
+    }
+  }
+
   .text-balance {
     text-wrap: balance;
   }
