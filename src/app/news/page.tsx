@@ -16,7 +16,7 @@ export const metadata = buildMetadata({
   path: "/news",
 });
 
-export const revalidate = 1200;
+export const revalidate = 60;
 
 export default async function NewsPage() {
   const locale = await getServerLocale();
@@ -68,6 +68,10 @@ export default async function NewsPage() {
             ecb: getLocalizedNewsSourceLabelSafe("ecb", locale),
             fed: getLocalizedNewsSourceLabelSafe("fed", locale),
             investing: getLocalizedNewsSourceLabelSafe("investing", locale),
+            cointelegraph: getLocalizedNewsSourceLabelSafe("cointelegraph", locale),
+            cryptonews: getLocalizedNewsSourceLabelSafe("cryptonews", locale),
+            messari: getLocalizedNewsSourceLabelSafe("messari", locale),
+            freeCryptoNews: getLocalizedNewsSourceLabelSafe("freeCryptoNews", locale),
             marketaux: getLocalizedNewsSourceLabelSafe("marketaux", locale),
             coindesk: getLocalizedNewsSourceLabelSafe("coindesk", locale),
           }}

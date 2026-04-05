@@ -194,7 +194,17 @@ export type NewsSignalType =
   | "growth-improvement"
   | "crypto-liquidity";
 
-export type NewsSourceId = "imf" | "ecb" | "fed" | "investing" | "marketaux" | "coindesk";
+export type NewsSourceId =
+  | "imf"
+  | "ecb"
+  | "fed"
+  | "investing"
+  | "marketaux"
+  | "coindesk"
+  | "cointelegraph"
+  | "cryptonews"
+  | "messari"
+  | "freeCryptoNews";
 
 export type NewsSourceType = "rss" | "html" | "api";
 
@@ -208,6 +218,7 @@ export type NewsItem = {
   sourceType: NewsSourceType;
   publishedAt: string;
   url: string;
+  canonicalUrl?: string | null;
   countries: string[];
   topics: NewsTopic[];
   assetClasses: NewsAssetClass[];
@@ -220,4 +231,7 @@ export type NewsItem = {
   watchNow: string;
   relatedIndicators: IndicatorId[];
   relatedCountries: CountrySummary[];
+  tags?: string[];
+  tickers?: string[];
+  sentiment?: string | null;
 };

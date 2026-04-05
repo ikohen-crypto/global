@@ -1,107 +1,399 @@
-# GlobalEcon Dashboard
+# GlobalEcon
 
-GlobalEcon is a production-grade Next.js web app for comparing countries across core macroeconomic, development, and sustainability indicators using free public data.
+GlobalEcon es una app Next.js orientada a comparativas macro, rankings financieros y un canal de noticias macro para pequeños inversores.
 
-## What it does
+Este README esta escrito para servir como contexto operativo para una IA de trabajo como Codex: explica el flujo de datos, la estructura real del repo, las decisiones tecnicas ya tomadas y los problemas abiertos mas importantes.
 
-- Search countries, regions, indicators, and popular comparisons
-- Compare 2 to 6 countries through SEO-friendly compare routes
-- Explore country pages with key metrics, FAQs, and related links
-- Browse indicator rankings and regional rankings
-- Read built-in explainers for every key indicator
-- Save favorite countries and comparisons locally
-- Support premium gating, analytics, ads, sitemap, robots, and OG images
+## Objetivo del producto
+
+- Comparar paises con foco macroeconomico.
+- Exponer rankings por indicador y rankings financieros compuestos.
+- Traducir noticias macro y de mercado a un formato util para inversion minorista.
+- Mantener una UX bilingue (`es` / `en`) con rutas SEO-friendly.
 
 ## Stack
 
 - Next.js 15 App Router
+- React 19
 - TypeScript
 - Tailwind CSS
-- TanStack Query
-- Zustand-ready architecture
-- Recharts
-- Leaflet + OpenStreetMap
-- TanStack Table
-- Radix/shadcn-style primitives
-- Vitest + React Testing Library
+- Lucide / Radix primitives
+- Vitest + Testing Library
 - Playwright
 
-## Data sources
+## Como correr el proyecto
 
-- World Bank Indicators API
-- REST Countries API
+### Requisitos
 
-## Core routes
+- Node.js 20+ recomendado
+- npm
 
-- `/`
-- `/compare`
-- `/compare/[countries]`
-- `/countries`
-- `/country/[slug]`
-- `/rankings/[indicator]`
-- `/region/[region]`
-- `/region/[region]/rankings/[indicator]`
-- `/indicator/[indicator]`
-- `/learn`
-- `/pricing`
-- `/about`
-- `/favorites`
+### Instalacion
 
-## Architecture
+```bash
+npm install
+```
 
-Key folders:
+### Desarrollo
 
-- `src/app`: Next.js App Router pages, metadata, sitemap, robots, OG image
-- `components`: shared UI, compare controls, rankings, favorites, map, premium gates
-- `lib/api`: World Bank and REST Countries adapters
-- `lib/normalizers`: raw API to stable internal shape
-- `lib/indicators`: strongly typed indicator registry
-- `lib/repository`: app-facing data composition layer
-- `lib/seo`: metadata and JSON-LD helpers
-- `lib/search`: local search index and matching
-- `lib/storage`: localStorage abstraction for favorites/history/preferences
-- `lib/featureFlags`: premium and ads gates
-- `lib/insights`: deterministic comparison summaries
-- `tests/globalecon`: unit and component tests
+```bash
+npm run dev
+```
 
-## Local setup
+La app corre en:
 
-1. Install dependencies:
-   `npm install`
-2. Start development:
-   `npm run dev`
-3. Open:
-   `http://localhost:3100`
+- `http://localhost:3100`
 
-## Scripts
+### Build
 
-- `npm run dev`
-- `npm run build`
-- `npm run start`
-- `npm run typecheck`
-- `npm run test`
-- `npm run test:e2e`
-- `npm run format`
+```bash
+npm run build
+npm run start
+```
 
-## Environment
+### Verificacion rapida
 
-Copy `.env.example` and adjust if needed:
+```bash
+npm run typecheck
+npm run test -- --config vitest.config.mjs
+```
+
+## Variables de entorno
+
+Hoy el proyecto usa al menos estas variables:
 
 - `NEXT_PUBLIC_SITE_URL`
 - `NEXT_PUBLIC_ANALYTICS_PROVIDER`
 - `NEXT_PUBLIC_ENABLE_ADS`
 - `NEXT_PUBLIC_ENABLE_PREMIUM`
+- `NEXT_PUBLIC_ENABLE_NEWS`
+- `NEXT_PUBLIC_ENABLE_NEWSLETTER`
+- `MARKETAUX_API_KEY`
 
-Recommended local value:
+Tambien existe un `.env.example` viejo con referencias a IMF que ya no reflejan bien el estado actual del modulo de noticias. Si se actualiza configuracion del proyecto, conviene alinear tambien ese archivo.
 
-- `NEXT_PUBLIC_SITE_URL=http://localhost:3100`
+## Estructura del proyecto
 
-## Verification status
+### App Router
 
-Validated in this workspace:
+- `src/app/page.tsx`
+  Home.
+- `src/app/compare`
+  Comparador.
+- `src/app/countries`
+  Catalogo de paises.
+- `src/app/country/[slug]`
+  Perfil de pais.
+- `src/app/indicator/[indicator]`
+  Pagina de indicador.
+- `src/app/rankings/[indicator]`
+  Rankings por indicador.
+- `src/app/rankings/financial`
+  Rankings financieros compuestos.
+- `src/app/region/[region]`
+  Region y rankings regionales.
+- `src/app/news`
+  Hub editorial de noticias.
+- `src/app/news/topic/[topic]`
+  Noticias por tema.
+- `src/app/news/country/[slug]`
+  Noticias por pais.
+- `src/app/favorites`
+  Favoritos y watchlist de noticias.
+
+### Capas de libreria
+
+- `lib/api`
+  Adaptadores remotos: World Bank, IMF, OECD, REST Countries, UN Population.
+- `lib/countries`
+  Catalogo de paises y utilidades de acceso rapido.
+- `lib/indicators`
+  Registry tipado de indicadores.
+- `lib/repository`
+  Capa de composicion app-facing: home, perfiles de pais, comparaciones, rankings.
+- `lib/financial-rankings`
+  Scoring y orden de rankings financieros.
+- `lib/news`
+  Agregacion, parseo, clasificacion, deduplicacion y copy editorial de noticias.
+- `lib/seo`
+  Metadata, sitemap, OG helpers.
+- `lib/storage`
+  localStorage para favoritos e historial.
+- `lib/featureFlags`
+  Flags runtime.
+- `lib/i18n`
+  Locale y mensajes de servidor.
+
+### Componentes relevantes
+
+- `components/news-card.tsx`
+  Card de noticia.
+- `components/news-section.tsx`
+  Grid/listado de noticias por bloque.
+- `components/news-explorer.tsx`
+  Explorador filtrable.
+- `components/news-sections-browser.tsx`
+  Navegacion sticky entre bloques del hub de noticias.
+- `components/layout`
+  Header, footer y layout compartido.
+
+## Data flow
+
+## 1. Macro / indicadores / paises
+
+Flujo base:
+
+1. `src/app/...` llama a la capa `lib/repository/economy.ts`.
+2. `lib/repository/economy.ts` decide que datos necesita la vista.
+3. Esa capa usa adaptadores de `lib/api/*`.
+4. Las respuestas se normalizan a series o snapshots tipados.
+5. El resultado final llega a las paginas y componentes.
+
+Ejemplo:
+
+- `src/app/country/[slug]/page.tsx`
+  -> `getCountryProfile(slug)`
+  -> `fetchCountryIndicators(country.iso3)`
+  -> fallbacks IMF / World Bank / metadata de pais
+  -> armado final de `metrics`
+  -> render de cards, graficos y FAQs
+
+## 2. Rankings por indicador
+
+Flujo:
+
+1. La ruta pide `getRankingData(indicatorId, regionSlug?)`.
+2. `lib/repository/economy.ts` carga paises relevantes.
+3. Para cada pais pide solo el indicador requerido.
+4. Ordena por valor y devuelve top 50.
+5. `unstable_cache` guarda snapshot por 30 min.
+
+Notas:
+
+- Esta ruta ya esta optimizada respecto a versiones anteriores.
+- Sigue siendo una ruta con costo real si el snapshot no esta caliente.
+
+## 3. Rankings financieros
+
+Flujo:
+
+1. La ruta pide `getFinancialRankingData(rankingId, regionSlug?)`.
+2. `lib/repository/economy.ts` evita construir perfiles completos.
+3. Carga mapas grandes reutilizables:
+   - inflacion IMF WEO
+   - crecimiento IMF WEO
+   - PIB IMF WEO
+   - deuda proxy IMF
+   - interest rate World Bank
+4. Con eso arma solo las 5 metricas necesarias.
+5. `lib/financial-rankings` produce scores y orden final.
+6. `unstable_cache` guarda snapshot por 30 min.
+
+## 4. Noticias
+
+Flujo:
+
+1. `src/app/news/page.tsx` o paginas relacionadas llaman a funciones de `lib/news/rss.ts`.
+2. `getMacroNews()` agrega todas las fuentes.
+3. Cada fuente pasa por su adaptador:
+   - `ECB` via RSS
+   - `Fed` via RSS
+   - `Investing` via varios RSS
+   - `CoinDesk` via RSS
+   - `IMF` via HTML parsing
+   - `Marketaux` via API si hay `MARKETAUX_API_KEY`
+4. Cada item se normaliza a `NewsItem`.
+5. Luego se aplican:
+   - tagging por pais / tema / asset class
+   - priorizacion por señal
+   - orden por fecha descendente
+   - deduplicacion y diversidad por subtema
+   - localizacion editorial para UI en espanol
+6. `getNewsSections()` construye los bloques del hub.
+
+## 5. Favoritos / watchlist
+
+Flujo:
+
+1. El usuario interactua en cliente.
+2. `lib/storage/index.ts` persiste datos en localStorage.
+3. Las paginas de favoritos cruzan esa configuracion con paises y noticias ya agregadas.
+
+## Fuentes de datos actuales
+
+### Macro / paises
+
+- World Bank
+- IMF
+- OECD
+- REST Countries
+- UN Population
+
+### Noticias
+
+- IMF
+- ECB
+- Federal Reserve
+- Investing.com
+- CoinDesk
+- Marketaux (opcional, con API key)
+
+## Decisiones tecnicas clave
+
+### 1. Separar app-facing repository de adapters remotos
+
+No se llama a APIs desde las paginas directamente si puede evitarse. La regla general es:
+
+- paginas -> `lib/repository`
+- repository -> `lib/api`
+
+Esto simplifica cambios de fuente y reduce acoplamiento.
+
+### 2. Usar cache por capas
+
+Se usan varias tecnicas:
+
+- `cache()` de React para resultados repetidos dentro del servidor
+- `unstable_cache()` para snapshots reutilizables, especialmente rankings
+- `fetch(..., { next: { revalidate } })` para respuestas remotas con TTL
+
+Esto ya existe en:
+
+- `lib/repository/economy.ts`
+- `lib/api/imf.ts`
+- `lib/api/worldBank.ts`
+- `lib/news/rss.ts`
+
+### 3. Preferir snapshots livianos sobre perfiles completos
+
+Los rankings financieros eran demasiado lentos cuando calculaban perfiles de pais completos. La solucion actual fue:
+
+- usar solo mapas de series necesarios
+- construir snapshots minimos
+- cachearlos
+
+### 4. Noticias con capa editorial propia
+
+No se renderiza la noticia remota tal cual llega. Hoy la UX de noticias depende de:
+
+- titulacion editorial
+- resumen editorial
+- fuente visible separada del titulo
+- deduplicacion y variedad por subtema
+
+Esto existe porque las fuentes mezclan idiomas, formatos y calidad editorial distinta.
+
+### 5. IMF no es RSS real
+
+La URL del IMF que parecia RSS no devolvia un feed util. Por eso:
+
+- `IMF` se trata como `html`
+- se parsean articulos recientes desde HTML oficial
+
+### 6. `Marketaux` es opcional
+
+Si no hay `MARKETAUX_API_KEY`, la app debe seguir funcionando.
+
+### 7. Espanol UI != traduccion exacta del articulo fuente
+
+La UI en espanol usa copy editorial generado. No intenta ser traduccion jurada del contenido original. Esto fue una decision practica para evitar cards mezcladas entre ingles y espanol.
+
+## Problemas actuales
+
+Esta lista esta pensada para que otra IA sepa donde todavia hay deuda tecnica o zonas delicadas.
+
+### Noticias
+
+- La traduccion visible mejoro mucho, pero sigue siendo una capa editorial heuristica. No hay pipeline de traduccion real.
+- La calidad y cantidad de noticias depende bastante de la mezcla de fuentes activas en ese momento.
+- `Crypto` requiere vigilancia constante: las fuentes cripto tienden a repetir temas parecidos.
+- `Marketaux` mejora variedad, pero solo si el token existe y la query devuelve material reciente.
+- `Cointelegraph` se evaluo como posible fuente adicional, pero no quedo integrada.
+
+### Rankings
+
+- Los rankings financieros mejoraron con snapshots, pero la primera carga en frio todavia puede sentirse lenta.
+- En `next dev` la percepcion de lentitud es peor que en produccion.
+
+### Layout / prod parity
+
+- Hubo diferencias visuales entre local y Vercel en anchos y espaciados. Ya se ajusto el ancho global, pero sigue siendo un area sensible.
+
+### Configuracion
+
+- `.env.example` no representa bien el estado real del proyecto.
+- Existe un archivo sospechoso/duplicado:
+  - `src/components/layout/AppShell.tsx`
+  No forma parte clara del flujo actual y conviene revisarlo antes de tocar layout profundo.
+
+### Codigo / mantenimiento
+
+- `lib/news/rss.ts` concentra demasiada responsabilidad:
+  - parsing
+  - tagging
+  - deduplicacion
+  - copy editorial
+  - ordenamiento
+  - armado de secciones
+  Conviene eventualmente dividirlo en modulos.
+
+## Donde tocar segun el tipo de cambio
+
+### Si queres cambiar copy o UX de noticias
+
+- `components/news-card.tsx`
+- `components/news-section.tsx`
+- `components/news-explorer.tsx`
+- `components/news-sections-browser.tsx`
+- `src/app/news/page.tsx`
+- `lib/news/rss.ts`
+
+### Si queres agregar o cambiar una fuente de noticias
+
+- `lib/news/sources.ts`
+- `lib/news/rss.ts`
+- `lib/types/index.ts` si cambia `NewsSourceId`
+
+### Si queres optimizar rankings
+
+- `lib/repository/economy.ts`
+- `lib/financial-rankings/index.ts`
+- `lib/api/imf.ts`
+- `lib/api/worldBank.ts`
+
+### Si queres cambiar paises o catalogo
+
+- `lib/countries`
+- `lib/api/restCountries.ts`
+- `data` y `lib/data`
+
+## Flujo de trabajo recomendado para Codex
+
+1. Leer este README completo.
+2. Identificar si el cambio cae en:
+   - macro data
+   - rankings
+   - noticias
+   - layout
+3. Buscar primero en la capa correcta:
+   - `src/app` si es presentacion/ruta
+   - `components` si es UI reutilizable
+   - `lib/repository` si es composicion
+   - `lib/api` si es fuente remota
+   - `lib/news` si toca agregacion editorial
+4. Antes de cerrar cambios, correr:
+
+```bash
+npm run typecheck
+npm run test -- --config vitest.config.mjs
+```
+
+## Estado de verificacion
+
+En este workspace se vienen usando con frecuencia:
 
 - `npm run typecheck`
-- `npm run build`
-- `npm run test`
+- `npm run test -- --config vitest.config.mjs`
+- `npm run dev`
 
-Playwright scaffolding is included, but I did not run `npm run test:e2e` in this pass.
+El `README` debe mantenerse alineado con el estado real del proyecto. Si se toca arquitectura de noticias, rankings o fuentes, actualizar tambien este archivo.

@@ -45,6 +45,33 @@ export const newsSourceDefinitions: Record<
     feedUrl: "https://www.coindesk.com/arc/outboundfeeds/rss/",
     homepage: "https://www.coindesk.com/",
   },
+  cointelegraph: {
+    id: "cointelegraph",
+    name: "CoinTelegraph",
+    type: "rss",
+    feedUrl: "https://cointelegraph.com/rss",
+    homepage: "https://cointelegraph.com/",
+  },
+  cryptonews: {
+    id: "cryptonews",
+    name: "Crypto.news",
+    type: "rss",
+    feedUrl: "https://crypto.news/feed",
+    homepage: "https://crypto.news/",
+  },
+  messari: {
+    id: "messari",
+    name: "Messari",
+    type: "rss",
+    feedUrl: "https://messari.io/rss",
+    homepage: "https://messari.io/",
+  },
+  freeCryptoNews: {
+    id: "freeCryptoNews",
+    name: "Free Crypto News",
+    type: "api",
+    homepage: "https://cryptocurrency.cv/",
+  },
   marketaux: {
     id: "marketaux",
     name: "Marketaux",

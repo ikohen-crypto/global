@@ -24,7 +24,7 @@ export async function generateMetadata({
   });
 }
 
-export const revalidate = 1200;
+export const revalidate = 60;
 
 export async function generateStaticParams() {
   const countries = await getSearchCountries();

@@ -18,11 +18,17 @@ import type {
 } from "@/lib/types";
 
 type ParsedFeedEntry = {
+  id?: string;
   title: string;
   summary: string;
   url: string;
   publishedAt: string;
   category?: string;
+  source?: string;
+  canonicalUrl?: string;
+  tags?: string[];
+  tickers?: string[];
+  sentiment?: string | null;
 };
 
 type NewsSection = {
@@ -42,6 +48,21 @@ type ImfArticleMetadata = {
   topic: string | null;
 };
 
+type FreeCryptoArticle = {
+  id?: string | number | null;
+  title?: string | null;
+  description?: string | null;
+  link?: string | null;
+  canonical_url?: string | null;
+  pub_date?: string | null;
+  source?: string | null;
+  tags?: unknown;
+  tickers?: unknown;
+  sentiment?: {
+    label?: string | null;
+  } | null;
+};
+
 function decodeXml(value: string) {
   return value
     .replaceAll("&amp;", "&")
@@ -57,8 +78,37 @@ function stripTags(value: string) {
     .trim();
 }
 
+function clampText(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3).trim()}...` : value;
+}
+
+function ensureStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [] as string[];
+
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function buildStableHash(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash.toString(16);
+}
+
 function extractItems(xml: string) {
   return [...xml.matchAll(/<item\b[\s\S]*?<\/item>/g)].map((match) => match[0]);
+}
+
+function extractTags(block: string, tag: string) {
+  return [...block.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "gi"))]
+    .map((match) => stripTags(match[1] ?? ""))
+    .filter(Boolean);
 }
 
 function extractTag(block: string, tag: string) {
@@ -85,14 +135,16 @@ function parseRss(xml: string): ParsedFeedEntry[] {
 
   return extractItems(xml)
     .map((item) => ({
-      title: stripTags(extractTag(item, "title")),
-      summary: stripTags(extractTag(item, "description")),
+      title: clampText(stripTags(extractTag(item, "title")), 300),
+      summary: clampText(stripTags(extractTag(item, "content:encoded") || extractTag(item, "description")), 1000),
       url: stripTags(extractTag(item, "link")),
       publishedAt:
         stripTags(extractTag(item, "pubDate")) ||
         stripTags(extractTag(item, "dc:date")) ||
+        stripTags(extractTag(item, "isoDate")) ||
         new Date().toISOString(),
       category: stripTags(extractTag(item, "category")),
+      tags: extractTags(item, "category"),
     }))
     .filter((item) => item.title && item.url);
 }
@@ -117,6 +169,58 @@ function parseMarketaux(payload: unknown): ParsedFeedEntry[] {
       publishedAt: item.published_at?.trim() ?? new Date().toISOString(),
     }))
     .filter((item) => item.title && item.url);
+}
+
+function parseFreeCryptoPayload(payload: unknown): ParsedFeedEntry[] {
+  const articles = Array.isArray(payload)
+    ? (payload as FreeCryptoArticle[])
+    : Array.isArray((payload as { data?: unknown })?.data)
+      ? ((payload as { data?: FreeCryptoArticle[] }).data ?? [])
+      : Array.isArray((payload as { articles?: unknown })?.articles)
+        ? ((payload as { articles?: FreeCryptoArticle[] }).articles ?? [])
+        : [];
+
+  return articles
+    .map((article) => {
+      const title = clampText(stripTags(article.title?.trim() ?? ""), 180);
+      const summary = clampText(stripTags(article.description?.trim() ?? ""), 420);
+      const url = article.link?.trim() ?? "";
+      const publishedAt = article.pub_date?.trim() ?? new Date().toISOString();
+      const canonicalUrl = article.canonical_url?.trim() ?? "";
+      const tags = ensureStringArray(article.tags);
+      const tickers = ensureStringArray(article.tickers);
+      const sourceLabel = article.source?.trim() || newsSourceDefinitions.freeCryptoNews.name;
+      const generatedId =
+        article.id !== undefined && article.id !== null && String(article.id).trim()
+          ? String(article.id).trim()
+          : buildStableHash(`${title}|${url}`);
+
+      return {
+        title,
+        summary,
+        url,
+        publishedAt,
+        canonicalUrl,
+        tags,
+        tickers,
+        sentiment: article.sentiment?.label?.trim() ?? null,
+        category: sourceLabel,
+        id: generatedId,
+      };
+    })
+    .filter((item) => item.title && item.url)
+    .map((item) => ({
+      id: item.id,
+      title: item.title,
+      summary: item.summary,
+      url: item.url,
+      publishedAt: new Date(item.publishedAt).toISOString(),
+      canonicalUrl: item.canonicalUrl || undefined,
+      tags: item.tags,
+      tickers: item.tickers,
+      sentiment: item.sentiment,
+      category: item.category,
+    }));
 }
 
 function parseImfIndex(html: string) {
@@ -178,6 +282,44 @@ function parseImfArticle(html: string, url: string): ImfArticleMetadata | null {
   };
 }
 
+async function fetchWithTimeoutAndRetry(
+  url: string,
+  revalidateSeconds: number,
+  retries = 2,
+  headers: Record<string, string> = {},
+) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        next: { revalidate: revalidateSeconds },
+        headers: {
+          ...headers,
+        },
+      } as RequestInit & { next: { revalidate: number } });
+
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      lastError = error;
+
+      if (attempt >= retries) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 350 * 2 ** attempt));
+    }
+  }
+
+  throw lastError;
+}
+
 function matchCountries(text: string) {
   const haystack = text.toLowerCase();
   return uniqueBy(
@@ -206,6 +348,32 @@ function inferRegions(countries: CountrySummary[]) {
     countries.map((country) => country.region).filter(Boolean),
     (region) => region,
   );
+}
+
+function getLocalizedCountryName(country: CountrySummary, locale: Locale) {
+  if (locale !== "es") {
+    return country.name;
+  }
+
+  const labels: Partial<Record<CountrySummary["iso3"], string>> = {
+    USA: "Estados Unidos",
+    GBR: "Reino Unido",
+    ARE: "Emiratos Arabes Unidos",
+    DEU: "Alemania",
+    JPN: "Japon",
+    KOR: "Corea del Sur",
+    PRK: "Corea del Norte",
+    CZE: "Chequia",
+  };
+
+  return labels[country.iso3] ?? country.name;
+}
+
+function getLocalizedCountryList(countries: CountrySummary[], locale: Locale, limit = 2) {
+  return countries
+    .slice(0, limit)
+    .map((country) => getLocalizedCountryName(country, locale))
+    .join(locale === "es" ? " y " : " and ");
 }
 
 function matchTopics(text: string): NewsTopic[] {
@@ -781,6 +949,53 @@ function classifyCoinDeskEntry(entry: ParsedFeedEntry) {
   };
 }
 
+function classifyFreeCryptoNewsEntry(entry: ParsedFeedEntry) {
+  const haystack = [
+    entry.title,
+    entry.summary,
+    entry.url,
+    ...(entry.tags ?? []),
+    ...(entry.tickers ?? []),
+    entry.sentiment ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    haystack.includes("bitcoin") ||
+    haystack.includes("btc") ||
+    haystack.includes("ethereum") ||
+    haystack.includes("eth") ||
+    haystack.includes("stablecoin") ||
+    haystack.includes("crypto") ||
+    haystack.includes("token") ||
+    haystack.includes("digital asset") ||
+    haystack.includes("etf")
+  ) {
+    return {
+      topics: haystack.includes("dollar") || haystack.includes("forex")
+        ? (["crypto", "forex"] as NewsTopic[])
+        : (["crypto"] as NewsTopic[]),
+      signalType: "crypto-liquidity" as NewsSignalType,
+      relatedIndicators: ["inflation", "interestRate"] as IndicatorId[],
+      importance:
+        haystack.includes("breaking") || haystack.includes("etf") || haystack.includes("stablecoin")
+          ? "high" as NewsImportance
+          : "medium" as NewsImportance,
+      assetClasses: haystack.includes("forex")
+        ? (["crypto", "macro", "forex"] as NewsAssetClass[])
+        : (["crypto", "macro"] as NewsAssetClass[]),
+      relatedCountries: matchCountries(haystack),
+    };
+  }
+
+  return classifyCoinDeskEntry(entry);
+}
+
+function classifyCryptoRssEntry(entry: ParsedFeedEntry) {
+  return classifyCoinDeskEntry(entry);
+}
+
 function shouldKeepSourceEntry(sourceId: NewsSourceId, entry: ParsedFeedEntry) {
   if (sourceId === "imf") {
     return /\/en\/news\/articles\/\d{4}\/\d{2}\/\d{2}\/(pr|cs|cf|sp)/i.test(entry.url);
@@ -840,6 +1055,31 @@ function shouldKeepSourceEntry(sourceId: NewsSourceId, entry: ParsedFeedEntry) {
       haystack.includes("tokenised") ||
       haystack.includes("dollar") ||
       haystack.includes("forex")
+    );
+  }
+
+  if (sourceId === "freeCryptoNews") {
+    const haystack = [
+      entry.title,
+      entry.summary,
+      entry.url,
+      ...(entry.tags ?? []),
+      ...(entry.tickers ?? []),
+      entry.sentiment ?? "",
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return (
+      haystack.includes("bitcoin") ||
+      haystack.includes("btc") ||
+      haystack.includes("ethereum") ||
+      haystack.includes("eth") ||
+      haystack.includes("crypto") ||
+      haystack.includes("stablecoin") ||
+      haystack.includes("digital asset") ||
+      haystack.includes("etf") ||
+      haystack.includes("token")
     );
   }
 
@@ -942,6 +1182,20 @@ export function getLocalizedNewsTitle(title: string, locale: Locale) {
   if (locale !== "es") return title.trim();
 
   const replacements: Array<[RegExp, string]> = [
+    [/\bas\b/gi, "por"],
+    [/\bafter\b/gi, "tras"],
+    [/\bwhile\b/gi, "mientras"],
+    [/\band\b/gi, "y"],
+    [/\bon\b/gi, "por"],
+    [/\bwith\b/gi, "con"],
+    [/\bof\b/gi, "de"],
+    [/\bto\b/gi, "a"],
+    [/\bahead of\b/gi, "antes de"],
+    [/\bamid\b/gi, "en medio de"],
+    [/\bdespite\b/gi, "pese a"],
+    [/United States/gi, "Estados Unidos"],
+    [/United Kingdom/gi, "Reino Unido"],
+    [/European Union/gi, "Union Europea"],
     [/IMF News/gi, "Noticias FMI"],
     [/Federal Reserve Board/gi, "Reserva Federal"],
     [/Federal Reserve/gi, "Reserva Federal"],
@@ -975,10 +1229,17 @@ export function getLocalizedNewsTitle(title: string, locale: Locale) {
     [/wage tracker/gi, "tracker salarial"],
     [/digital euro/gi, "euro digital"],
     [/tokeni[sz]ed/gi, "tokenizados"],
+    [/etf inflows/gi, "flujos hacia ETF"],
+    [/etf outflows/gi, "salidas de ETF"],
+    [/inflows/gi, "flujos de entrada"],
+    [/outflows/gi, "salidas"],
+    [/flows/gi, "flujos"],
     [/interest rates/gi, "tasas de interes"],
     [/interest rate/gi, "tasa de interes"],
     [/rate hike/gi, "suba de tasas"],
     [/rate cut/gi, "baja de tasas"],
+    [/rate fears/gi, "temor a tasas altas"],
+    [/rate worries/gi, "preocupacion por las tasas"],
     [/rates/gi, "tasas"],
     [/yields/gi, "rendimientos"],
     [/yield/gi, "rendimiento"],
@@ -1002,6 +1263,31 @@ export function getLocalizedNewsTitle(title: string, locale: Locale) {
     [/crypto/gi, "crypto"],
     [/bitcoin/gi, "bitcoin"],
     [/ethereum/gi, "ethereum"],
+    [/rallies/gi, "rebota"],
+    [/rally/gi, "rebote"],
+    [/gains/gi, "gana impulso"],
+    [/rises/gi, "sube"],
+    [/jumps/gi, "salta"],
+    [/surges/gi, "se dispara"],
+    [/falls/gi, "cae"],
+    [/slides/gi, "retrocede"],
+    [/drops/gi, "baja"],
+    [/rebounds/gi, "rebota"],
+    [/rebound/gi, "rebote"],
+    [/softens/gi, "se modera"],
+    [/cools/gi, "se enfria"],
+    [/eases/gi, "cede"],
+    [/traders/gi, "operadores"],
+    [/bets/gi, "apuestas"],
+    [/fears/gi, "temores"],
+    [/worries/gi, "preocupaciones"],
+    [/cuts/gi, "reduce"],
+    [/cut/gi, "recorta"],
+    [/returns/gi, "regresan"],
+    [/return/gi, "regreso"],
+    [/improves/gi, "mejora"],
+    [/improve/gi, "mejora"],
+    [/pricing/gi, "precio"],
     [/statement/gi, "declaracion"],
     [/decisions/gi, "decisiones"],
     [/press release/gi, "comunicado"],
@@ -1044,6 +1330,32 @@ export function getLocalizedNewsTitle(title: string, locale: Locale) {
     .trim();
 }
 
+function hasVisibleEnglishResidue(text: string) {
+  const englishMarkers = [
+    " the ",
+    " and ",
+    " with ",
+    " after ",
+    " while ",
+    " trader ",
+    " traders ",
+    " market ",
+    " markets ",
+    " fears ",
+    " worries ",
+    " return ",
+    " returns ",
+    " rebound ",
+    " rally ",
+    " rallies ",
+    " gains ",
+    " rises ",
+    " slides ",
+  ];
+  const normalized = ` ${text.toLowerCase()} `;
+  return englishMarkers.some((marker) => normalized.includes(marker));
+}
+
 export function getLocalizedNewsExcerpt(text: string, locale: Locale) {
   const localized = getLocalizedNewsTitle(text, locale);
   return localized.length > 220 ? `${localized.slice(0, 217).trim()}...` : localized;
@@ -1054,17 +1366,25 @@ export function getLocalizedNewsSourceLabelSafe(sourceId: NewsSourceId, locale: 
     ? {
         imf: "FMI",
         ecb: "BCE",
-        fed: "Reserva Federal",
-        investing: "Investing",
-        coindesk: "CoinDesk",
-        marketaux: "Mercados globales",
-      }
-    : {
+      fed: "Reserva Federal",
+      investing: "Investing",
+      coindesk: "CoinDesk",
+      cointelegraph: "CoinTelegraph",
+      cryptonews: "Crypto.news",
+      messari: "Messari",
+      freeCryptoNews: "Free Crypto News",
+      marketaux: "Mercados globales",
+    }
+  : {
         imf: "IMF News",
         ecb: "ECB Press",
         fed: "Federal Reserve Press",
         investing: "Investing.com RSS",
         coindesk: "CoinDesk",
+        cointelegraph: "CoinTelegraph",
+        cryptonews: "Crypto.news",
+        messari: "Messari",
+        freeCryptoNews: "Free Crypto News",
         marketaux: "Marketaux",
       };
 
@@ -1073,13 +1393,15 @@ export function getLocalizedNewsSourceLabelSafe(sourceId: NewsSourceId, locale: 
 
 export function getLocalizedNewsSummarySafe(item: NewsItem, locale: Locale) {
   if (locale !== "es") {
-    return getLocalizedNewsExcerpt(item.summary || item.title, locale);
+    const happened = getLocalizedNewsExcerpt(item.whatHappened || item.summary || item.title, locale);
+    const narrative = getLocalizedNewsNarrativeSafe(item, locale);
+    return `${happened} ${narrative.why}`.replace(/\s+/g, " ").trim();
   }
 
   const subject = inferSpanishHeadlineSubject(item);
   const countryLabel =
     item.relatedCountries.length > 0
-      ? item.relatedCountries.slice(0, 2).map((country) => country.name).join(" y ")
+      ? getLocalizedCountryList(item.relatedCountries, locale)
       : "los mercados vinculados";
   const primaryTopic = item.topics[0] ?? "growth";
   const topicLabel = {
@@ -1104,7 +1426,10 @@ export function getLocalizedNewsSummarySafe(item: NewsItem, locale: Locale) {
     "crypto-liquidity": `La noticia se enfoca en ${focus} y su posible impacto sobre BTC, ETH, liquidez, regulacion y flujos hacia activos digitales.`,
   }[item.signalType];
 
-  return summary.replace(/\s+/g, " ").trim();
+  const narrative = getLocalizedNewsNarrativeSafe(item, locale);
+  const happenedLead =
+    item.signalType === "crypto-liquidity" ? buildCryptoSpanishLead(item) : narrative.happened;
+  return `${happenedLead} ${summary} ${narrative.why}`.replace(/\s+/g, " ").trim();
 }
 
 function inferSpanishHeadlineSubject(item: NewsItem) {
@@ -1125,8 +1450,178 @@ function inferSpanishHeadlineSubject(item: NewsItem) {
   if (haystack.includes("inflation") || haystack.includes("cpi")) return "inflacion";
   if (haystack.includes("jobs") || haystack.includes("employment") || haystack.includes("payroll")) return "empleo";
 
-  const countryLabel = item.relatedCountries[0]?.name;
+  const countryLabel = item.relatedCountries[0]
+    ? getLocalizedCountryName(item.relatedCountries[0], "es")
+    : null;
   return countryLabel ?? "mercados";
+}
+
+function inferCryptoSpanishAngle(item: NewsItem) {
+  const haystack = `${item.title} ${item.summary}`.toLowerCase();
+
+  if (haystack.includes("etf") && (haystack.includes("flow") || haystack.includes("inflow") || haystack.includes("outflow"))) {
+    return "flujos de ETF";
+  }
+  if (haystack.includes("etf")) return "ETF";
+  if (haystack.includes("stablecoin")) return "stablecoins";
+  if (haystack.includes("regulation") || haystack.includes("regulatory") || haystack.includes("sec")) {
+    return "regulacion";
+  }
+  if (haystack.includes("liquidity")) return "liquidez";
+  if (haystack.includes("rate") || haystack.includes("yield")) return "tasas";
+  if (haystack.includes("dollar") || haystack.includes("usd")) return "dolar";
+  if (haystack.includes("exchange") || haystack.includes("custody")) return "exchanges";
+  if (haystack.includes("tokenized") || haystack.includes("tokenised") || haystack.includes("digital asset")) {
+    return "tokenizacion";
+  }
+
+  return "flujo macro";
+}
+
+function inferCryptoSpanishDirection(item: NewsItem) {
+  const haystack = `${item.title} ${item.summary}`.toLowerCase();
+
+  if (
+    haystack.includes("falls") ||
+    haystack.includes("slides") ||
+    haystack.includes("drops") ||
+    haystack.includes("sinks") ||
+    haystack.includes("weakens")
+  ) {
+    return "cede";
+  }
+
+  if (haystack.includes("rebounds") || haystack.includes("rebound") || haystack.includes("recovers")) {
+    return "rebota";
+  }
+
+  if (
+    haystack.includes("rallies") ||
+    haystack.includes("rally") ||
+    haystack.includes("gains") ||
+    haystack.includes("rises") ||
+    haystack.includes("jumps") ||
+    haystack.includes("surges")
+  ) {
+    return "sube";
+  }
+
+  return "bajo foco";
+}
+
+function getCryptoThesisKey(item: NewsItem) {
+  const subject = inferSpanishHeadlineSubject(item);
+  const angle = inferCryptoSpanishAngle(item);
+  const countries = item.relatedCountries
+    .map((country) => country.iso3)
+    .sort()
+    .join(",");
+
+  return `${subject}|${angle}|${countries}`;
+}
+
+function buildCryptoSpanishEditorialTitle(item: NewsItem) {
+  const subject = inferSpanishHeadlineSubject(item);
+  const angle = inferCryptoSpanishAngle(item);
+  const direction = inferCryptoSpanishDirection(item);
+  const withAngle = direction === "bajo foco" ? `bajo foco por ${angle}` : `${direction} con foco en ${angle}`;
+
+  if (subject === "bitcoin ETF") {
+    return direction === "bajo foco"
+      ? "Bitcoin ETF bajo foco por flujos y liquidez"
+      : `Bitcoin ETF ${direction} con foco en flujos y liquidez`;
+  }
+  if (subject === "ethereum ETF") {
+    return direction === "bajo foco"
+      ? "Ethereum ETF bajo foco por flujos y liquidez"
+      : `Ethereum ETF ${direction} con foco en flujos y liquidez`;
+  }
+  if (subject === "bitcoin") return `Bitcoin ${withAngle}`;
+  if (subject === "ethereum") return `Ethereum ${withAngle}`;
+  if (subject === "stablecoins") {
+    if (angle === "stablecoins") return "Stablecoins bajo foco por liquidez y regulacion";
+    return `Stablecoins bajo foco por ${angle}`;
+  }
+  if (subject === "activos tokenizados") return "Activos tokenizados bajo foco macro";
+
+  return `Crypto bajo foco por ${angle}`;
+}
+
+function buildCryptoSpanishDisplayTitle(item: NewsItem) {
+  const localizedSourceTitle = getLocalizedNewsTitle(item.title, "es");
+  return item.sourceId === "coindesk" || hasVisibleEnglishResidue(localizedSourceTitle)
+    ? buildCryptoSpanishEditorialTitle(item)
+    : localizedSourceTitle;
+}
+
+function buildCryptoSpanishLead(item: NewsItem) {
+  const localizedSourceSummary = getLocalizedNewsExcerpt(item.summary || item.title, "es");
+  const localizedSourceTitle = getLocalizedNewsTitle(item.title, "es");
+  const subject = inferSpanishHeadlineSubject(item);
+  const angle = inferCryptoSpanishAngle(item);
+  const sourceLabel = getLocalizedNewsSourceLabelSafe(item.sourceId, "es");
+  const readableSubject = subject === "stablecoins" ? "el segmento de stablecoins" : subject;
+  const readableAngle =
+    subject === "stablecoins" && angle === "stablecoins" ? "liquidez y regulacion" : angle;
+  const combined = hasVisibleEnglishResidue(`${localizedSourceTitle} ${localizedSourceSummary}`)
+    ? `${sourceLabel} destaca un movimiento en ${readableSubject} con foco en ${readableAngle} y su posible traslado a liquidez y apetito por riesgo.`
+    : `${localizedSourceTitle}. ${localizedSourceSummary}`;
+  return combined.length > 260 ? `${combined.slice(0, 257).trim()}...` : combined;
+}
+
+function getCryptoEditorialFingerprint(item: NewsItem) {
+  return `${buildCryptoSpanishDisplayTitle(item)}|${buildCryptoSpanishLead(item)}`
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildCryptoSpanishPracticalWhy(item: NewsItem) {
+  const subject = inferSpanishHeadlineSubject(item);
+  const angle = inferCryptoSpanishAngle(item);
+
+  if (angle === "flujos de ETF") {
+    return `${subject} gana o pierde respaldo marginal cuando cambian los flujos de ETF, porque eso altera demanda spot, sentimiento y capacidad de extender el movimiento.`;
+  }
+
+  if (angle === "tasas") {
+    return `${subject} sigue sensible a tasas reales y expectativas de la Fed: si el mercado descuenta un giro menos restrictivo, crypto suele respirar mejor.`;
+  }
+
+  if (angle === "regulacion") {
+    return `La regulacion importa en ${subject} porque puede cambiar acceso, liquidez, custodia y velocidad de entrada de capital institucional.`;
+  }
+
+  if (angle === "liquidez") {
+    return `${subject} depende mucho de liquidez global y apetito por riesgo: cuando mejora el pulso financiero, los activos digitales suelen reaccionar primero.`;
+  }
+
+  return `${subject} importa porque esta historia puede mover liquidez, apetito por riesgo y posicionamiento tactico dentro de crypto.`;
+}
+
+function buildCryptoSpanishPracticalWatch(item: NewsItem) {
+  const subject = inferSpanishHeadlineSubject(item);
+  const angle = inferCryptoSpanishAngle(item);
+
+  if (angle === "flujos de ETF") {
+    return `Mira si los flujos de ETF se sostienen durante varias sesiones, si BTC conserva momentum frente a ETH y si el dolar deja de endurecer las condiciones financieras.`;
+  }
+
+  if (angle === "tasas") {
+    return `Mira rendimientos reales de EE. UU., probabilidades implícitas de la Fed y comportamiento de BTC tras cada dato macro para validar si la lectura de tasas se sostiene.`;
+  }
+
+  if (angle === "regulacion") {
+    return `Mira titulares regulatorios, reacción de exchanges y si ${subject} logra mantener soporte pese al ruido legal o político.`;
+  }
+
+  if (angle === "liquidez") {
+    return `Mira dolar, yields reales, spreads de crédito y volumen en BTC/ETH para ver si la mejora de liquidez llega de verdad al mercado crypto.`;
+  }
+
+  return `Mira BTC, ETH, volumen, dolar y tasas reales para confirmar si esta historia cambia de verdad el apetito por riesgo en crypto.`;
 }
 
 export function getLocalizedNewsTitleSafe(item: NewsItem, locale: Locale) {
@@ -1136,7 +1631,7 @@ export function getLocalizedNewsTitleSafe(item: NewsItem, locale: Locale) {
 
   const countryLabel =
     item.relatedCountries.length > 0
-      ? item.relatedCountries.slice(0, 2).map((country) => country.name).join(" y ")
+      ? getLocalizedCountryList(item.relatedCountries, locale)
       : "mercados vinculados";
   const primaryTopic = item.topics[0] ?? "growth";
   const topicLabel = {
@@ -1151,6 +1646,10 @@ export function getLocalizedNewsTitleSafe(item: NewsItem, locale: Locale) {
   }[primaryTopic];
   const subject = inferSpanishHeadlineSubject(item);
 
+  if (item.signalType === "crypto-liquidity") {
+    return buildCryptoSpanishDisplayTitle(item);
+  }
+
   return {
     "central-bank-shift": `Novedad de politica monetaria sobre ${subject || topicLabel}`,
     "inflation-pressure": `Presion inflacionaria en ${countryLabel}`,
@@ -1158,14 +1657,14 @@ export function getLocalizedNewsTitleSafe(item: NewsItem, locale: Locale) {
     "debt-risk": `Foco en deuda y financiamiento de ${countryLabel}`,
     "growth-slowdown": `Senales de desaceleracion en ${countryLabel}`,
     "growth-improvement": `Mejora de crecimiento en ${countryLabel}`,
-    "crypto-liquidity": `Impacto macro en ${subject}`,
+    "crypto-liquidity": `Impacto macro sobre ${subject}`,
   }[item.signalType];
 }
 
 export function getLocalizedNewsNarrative(item: NewsItem, locale: Locale) {
   const countryLabel =
     item.relatedCountries.length > 0
-      ? item.relatedCountries.slice(0, 2).map((country) => country.name).join(locale === "es" ? " y " : " and ")
+      ? getLocalizedCountryList(item.relatedCountries, locale)
       : locale === "es"
         ? "los mercados vinculados"
         : "the linked markets";
@@ -1178,7 +1677,7 @@ export function getLocalizedNewsNarrative(item: NewsItem, locale: Locale) {
         "currency-stress": `${item.source} marca tensiÃ³n cambiaria o presiÃ³n sobre la moneda, algo clave para seguir inflaciÃ³n importada y activos en moneda dura.`,
         "debt-risk": `${item.source} seÃ±ala riesgo de deuda, refinanciaciÃ³n o fragilidad fiscal con impacto potencial sobre spreads y apetito por riesgo.`,
         "growth-slowdown": `${item.source} apunta a una desaceleraciÃ³n del crecimiento o a un deterioro del impulso econÃ³mico en ${countryLabel}.`,
-        "growth-improvement": `${item.source} sugiere una mejora del crecimiento o una seÃ±al mÃ¡s constructiva para la actividad y los activos vinculados.`,
+        "growth-improvement": `${item.source} sugiere una mejora del crecimiento o una seÃ±al mÃ¡s constructiva para la actividad y los activos vinculados en ${countryLabel}.`,
         "crypto-liquidity": `${item.source} conecta la macro con crypto, liquidez o regulaciÃ³n de mercados digitales que puede afectar BTC, ETH y el apetito por riesgo.`,
       }[item.signalType],
       why: {
@@ -1236,7 +1735,7 @@ export function getLocalizedNewsNarrative(item: NewsItem, locale: Locale) {
 export function getLocalizedNewsNarrativeSafe(item: NewsItem, locale: Locale) {
   const countryLabel =
     item.relatedCountries.length > 0
-      ? item.relatedCountries.slice(0, 2).map((country) => country.name).join(locale === "es" ? " y " : " and ")
+      ? getLocalizedCountryList(item.relatedCountries, locale)
       : locale === "es"
         ? "los mercados vinculados"
         : "the linked markets";
@@ -1244,15 +1743,23 @@ export function getLocalizedNewsNarrativeSafe(item: NewsItem, locale: Locale) {
   if (locale === "es") {
     const sourceLabel = getLocalizedNewsSourceLabelSafe(item.sourceId, locale);
 
+    if (item.signalType === "crypto-liquidity") {
+      return {
+        happened: `${sourceLabel} pone el foco en ${inferSpanishHeadlineSubject(item)} y en como un cambio de ${inferCryptoSpanishAngle(item)} puede mover el tono de mercado en crypto.`,
+        why: buildCryptoSpanishPracticalWhy(item),
+        watch: buildCryptoSpanishPracticalWatch(item),
+      };
+    }
+
     return {
       happened: {
         "central-bank-shift": `${sourceLabel} publico una actualizacion o comunicacion oficial capaz de mover rapido tasas, bonos, FX y valuaciones.`,
         "inflation-pressure": `${sourceLabel} aporta una senal de presion inflacionaria o expectativas de precios que puede cambiar el escenario macro para ${countryLabel}.`,
         "currency-stress": `${sourceLabel} muestra tension cambiaria o presion sobre la moneda, algo clave para seguir inflacion importada y activos en moneda dura.`,
-        "debt-risk": `${sourceLabel} senala riesgo de deuda, refinanciacion o fragilidad fiscal con impacto potencial sobre spreads y apetito por riesgo.`,
-        "growth-slowdown": `${sourceLabel} apunta a una desaceleracion del crecimiento o a un deterioro del impulso economico en ${countryLabel}.`,
-        "growth-improvement": `${sourceLabel} sugiere una mejora del crecimiento o una senal mas constructiva para la actividad y los activos vinculados.`,
-        "crypto-liquidity": `${sourceLabel} conecta la macro con crypto, liquidez o regulacion de mercados digitales que puede afectar BTC, ETH y el apetito por riesgo.`,
+      "debt-risk": `${sourceLabel} senala riesgo de deuda, refinanciacion o fragilidad fiscal con impacto potencial sobre spreads y apetito por riesgo.`,
+      "growth-slowdown": `${sourceLabel} apunta a una desaceleracion del crecimiento o a un deterioro del impulso economico en ${countryLabel}.`,
+      "growth-improvement": `${sourceLabel} sugiere una mejora del crecimiento o una senal mas constructiva para la actividad y los activos vinculados en ${countryLabel}.`,
+      "crypto-liquidity": `${sourceLabel} conecta la macro con crypto, liquidez o regulacion de mercados digitales que puede afectar BTC, ETH y el apetito por riesgo.`,
       }[item.signalType],
       why: {
         "central-bank-shift": "Estos cambios suelen mover expectativas de tasas, rendimientos, divisas y multiplos de mercado antes de que cambien los datos duros.",
@@ -1307,6 +1814,10 @@ function toNewsItem(sourceId: NewsSourceId, entry: ParsedFeedEntry): NewsItem {
         ? classifyInvestingEntry(entry)
         : sourceId === "coindesk"
           ? classifyCoinDeskEntry(entry)
+          : sourceId === "cointelegraph" || sourceId === "cryptonews" || sourceId === "messari"
+            ? classifyCryptoRssEntry(entry)
+          : sourceId === "freeCryptoNews"
+            ? classifyFreeCryptoNewsEntry(entry)
         : null;
   const relatedCountries = sourceSpecific?.relatedCountries ?? fallbackCountries;
   const topics = sourceSpecific?.topics ?? matchTopics(text);
@@ -1316,15 +1827,16 @@ function toNewsItem(sourceId: NewsSourceId, entry: ParsedFeedEntry): NewsItem {
   const assetClasses = sourceSpecific?.assetClasses ?? inferAssetClasses(topics);
 
   return {
-    id: `${sourceId}:${toKebabCase(entry.title)}:${entry.publishedAt}`,
+    id: entry.id ?? `${sourceId}:${toKebabCase(entry.title)}:${entry.publishedAt}`,
     slug: toKebabCase(entry.title),
     title: entry.title,
     summary: entry.summary,
-    source: source.name,
+    source: entry.source || source.name,
     sourceId,
     sourceType: source.type,
     publishedAt: new Date(entry.publishedAt).toISOString(),
     url: entry.url,
+    canonicalUrl: entry.canonicalUrl ?? null,
     countries: relatedCountries.map((country) => country.iso3),
     topics,
     assetClasses,
@@ -1337,6 +1849,9 @@ function toNewsItem(sourceId: NewsSourceId, entry: ParsedFeedEntry): NewsItem {
     watchNow: buildWatchNow(signalType, relatedIndicators, relatedCountries),
     relatedIndicators,
     relatedCountries,
+    tags: entry.tags ?? [],
+    tickers: entry.tickers ?? [],
+    sentiment: entry.sentiment ?? null,
   };
 }
 
@@ -1362,6 +1877,49 @@ async function fetchRssFeed(sourceId: NewsSourceId) {
       .slice(0, 20)
       .map((entry) => toNewsItem(sourceId, entry));
   } catch {
+    return [] as NewsItem[];
+  }
+}
+
+function dedupeRssEntries(entries: ParsedFeedEntry[]) {
+  const byUrl = uniqueBy(entries, (entry) => entry.url);
+  return uniqueBy(
+    byUrl,
+    (entry) => buildStableHash(`${normalizeNewsText(entry.title)}|${new Date(entry.publishedAt).toISOString()}`),
+  );
+}
+
+async function fetchCryptoRssFeed(sourceId: "cointelegraph" | "cryptonews" | "messari") {
+  const source = newsSourceDefinitions[sourceId];
+  if (!source.feedUrl) return [] as NewsItem[];
+
+  try {
+    const response = await fetchWithTimeoutAndRetry(source.feedUrl, 60 * 5, 2, {
+      Accept: "application/rss+xml, application/xml, text/xml, */*",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    });
+
+    if (!response.ok) {
+      console.error(`[${sourceId}] RSS request failed with status ${response.status}`);
+      return [] as NewsItem[];
+    }
+
+    const xml = await response.text();
+    const entries = dedupeRssEntries(
+      parseRss(xml)
+        .map((entry) => ({
+          ...entry,
+          id: buildStableHash(entry.id || entry.url || entry.title),
+          source: source.name,
+        }))
+        .filter((entry) => shouldKeepSourceEntry(sourceId, entry)),
+    ).slice(0, 20);
+
+    console.info(`[${sourceId}] Received ${entries.length} RSS articles`);
+    return entries.map((entry) => toNewsItem(sourceId, entry));
+  } catch (error) {
+    console.error(`[${sourceId}] RSS fetch failed`, error);
     return [] as NewsItem[];
   }
 }
@@ -1539,6 +2097,78 @@ async function fetchMarketaux() {
   }
 }
 
+function dedupeFreeCryptoEntries(entries: ParsedFeedEntry[]) {
+  const byCanonical = uniqueBy(entries, (entry) => entry.canonicalUrl || `canonical:${entry.url}`);
+  const byUrl = uniqueBy(byCanonical, (entry) => entry.url);
+  return uniqueBy(
+    byUrl,
+    (entry) => buildStableHash(`${normalizeNewsText(entry.title)}|${new Date(entry.publishedAt).toISOString()}`),
+  );
+}
+
+async function fetchFreeCryptoEndpoint(path: string, revalidateSeconds: number) {
+  const endpointUrl = `https://cryptocurrency.cv${path}`;
+  const browserHeaders = {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    Referer: "https://cryptocurrency.cv/",
+    Origin: "https://cryptocurrency.cv",
+  };
+
+  try {
+    const response = await fetchWithTimeoutAndRetry(endpointUrl, revalidateSeconds, 2, browserHeaders);
+
+    if (!response.ok) {
+      console.error(`[freeCryptoNews] Request failed for ${path} with status ${response.status}`);
+      return [] as ParsedFeedEntry[];
+    }
+
+    const payload = (await response.json()) as unknown;
+    const parsed = dedupeFreeCryptoEntries(parseFreeCryptoPayload(payload)).filter((entry) =>
+      shouldKeepSourceEntry("freeCryptoNews", entry),
+    );
+
+    console.info(`[freeCryptoNews] Received ${parsed.length} articles from ${path}`);
+    return parsed;
+  } catch (error) {
+    console.error(`[freeCryptoNews] Failed ${path}`, error);
+    return [] as ParsedFeedEntry[];
+  }
+}
+
+async function fetchFreeCryptoNews() {
+  const [news, breaking] = await Promise.all([
+    fetchFreeCryptoEndpoint("/api/news?limit=20", 60 * 3),
+    fetchFreeCryptoEndpoint("/api/breaking?limit=10", 60),
+  ]);
+
+  return dedupeFreeCryptoEntries([...breaking, ...news]).map((entry) => {
+    const item = toNewsItem("freeCryptoNews", entry);
+    return {
+      ...item,
+      source: entry.category || newsSourceDefinitions.freeCryptoNews.name,
+    };
+  });
+}
+
+export async function searchFreeCryptoNews(query: string) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return [] as NewsItem[];
+
+  const params = new URLSearchParams({ q: normalizedQuery });
+  const entries = await fetchFreeCryptoEndpoint(`/api/search?${params.toString()}`, 60 * 3);
+
+  return dedupeFreeCryptoEntries(entries).map((entry) => {
+    const item = toNewsItem("freeCryptoNews", entry);
+    return {
+      ...item,
+      source: entry.category || newsSourceDefinitions.freeCryptoNews.name,
+    };
+  });
+}
+
 async function fetchSource(sourceId: NewsSourceId) {
   if (sourceId === "imf") {
     return fetchImfNews();
@@ -1552,12 +2182,15 @@ async function fetchSource(sourceId: NewsSourceId) {
     return fetchInvestingNews();
   }
 
-  return fetchRssFeed(sourceId);
-}
+  if (sourceId === "cointelegraph" || sourceId === "cryptonews" || sourceId === "messari") {
+    return fetchCryptoRssFeed(sourceId);
+  }
 
-function dedupeNews(items: NewsItem[]) {
-  const byUrl = uniqueBy(items, (item) => item.url || `${item.sourceId}:${item.slug}`);
-  return uniqueBy(byUrl, (item) => item.slug);
+  if (sourceId === "freeCryptoNews") {
+    return fetchFreeCryptoNews();
+  }
+
+  return fetchRssFeed(sourceId);
 }
 
 function sortNewsByPublishedAt(items: NewsItem[]) {
@@ -1568,17 +2201,175 @@ function sortNewsByPublishedAt(items: NewsItem[]) {
   );
 }
 
-function buildSimilarityKey(item: NewsItem) {
-  return `${item.signalType}|${`${item.title} ${item.summary}`
+function normalizeNewsText(value: string) {
+  return value
     .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\b(the|and|with|for|from|into|under|after|before|will|has|have|had|said|says|news|press|release|board|federal|reserve|ecb|imf|coindesk|investing|marketaux)\b/g, " ")
-    .replace(/\b(bitcoin|ethereum|stablecoin|crypto|digital|euro|dollar|oil|crude|jobs|employment|inflation|rates|yield|market|policy)\b/g, "$1")
     .replace(/\s+/g, " ")
-    .trim()
-    .split(" ")
-    .slice(0, 8)
-    .join(" ")}`;
+    .trim();
+}
+
+function buildSimilarityTokens(item: NewsItem) {
+  const stopwords = new Set([
+    "the",
+    "and",
+    "with",
+    "for",
+    "from",
+    "into",
+    "under",
+    "after",
+    "before",
+    "will",
+    "has",
+    "have",
+    "had",
+    "said",
+    "says",
+    "news",
+    "press",
+    "release",
+    "board",
+    "federal",
+    "reserve",
+    "ecb",
+    "imf",
+    "coindesk",
+    "investing",
+    "marketaux",
+    "update",
+    "updates",
+    "official",
+    "officials",
+    "officially",
+    "latest",
+    "macro",
+    "global",
+    "markets",
+    "market",
+    "today",
+  ]);
+
+  return Array.from(
+    new Set(
+      normalizeNewsText(`${item.title} ${item.summary}`)
+        .split(" ")
+        .filter((token) => token.length > 2 && !stopwords.has(token)),
+    ),
+  ).slice(0, 10);
+}
+
+function countTokenOverlap(left: string[], right: string[]) {
+  if (left.length === 0 || right.length === 0) return 0;
+
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const shared = [...leftSet].filter((token) => rightSet.has(token)).length;
+  const base = Math.min(leftSet.size, rightSet.size);
+
+  return base === 0 ? 0 : shared / base;
+}
+
+function countSharedTokens(left: string[], right: string[]) {
+  if (left.length === 0 || right.length === 0) return 0;
+
+  const rightSet = new Set(right);
+  return Array.from(new Set(left)).filter((token) => rightSet.has(token)).length;
+}
+
+function buildSimilarityKey(item: NewsItem) {
+  const countries = item.relatedCountries
+    .map((country) => country.iso3)
+    .sort()
+    .join(",");
+  const topics = [...item.topics].sort().join(",");
+  const tokens = buildSimilarityTokens(item).sort().join(" ");
+
+  return `${item.signalType}|${countries}|${topics}|${tokens}`;
+}
+
+function getPrimaryNewsTopic(item: NewsItem) {
+  return item.topics[0] ?? "growth";
+}
+
+function getStoryBucketForDeduping(item: NewsItem) {
+  const primaryTopic = getPrimaryNewsTopic(item);
+  return primaryTopic === "crypto" ? getCryptoStoryBucket(item) : getTopicStoryBucket(primaryTopic, item);
+}
+
+function areLikelyDuplicateStories(left: NewsItem, right: NewsItem) {
+  if (left.url === right.url) return true;
+  if (left.slug === right.slug) return true;
+
+  const leftTokens = buildSimilarityTokens(left);
+  const rightTokens = buildSimilarityTokens(right);
+  const overlap = countTokenOverlap(leftTokens, rightTokens);
+  const sharedTokenCount = countSharedTokens(leftTokens, rightTokens);
+  const sameSignal = left.signalType === right.signalType;
+  const sameSource = left.sourceId === right.sourceId;
+  const sameBucket = getStoryBucketForDeduping(left) === getStoryBucketForDeduping(right);
+  const sameCryptoThesis =
+    left.signalType === "crypto-liquidity" &&
+    right.signalType === "crypto-liquidity" &&
+    getCryptoThesisKey(left) === getCryptoThesisKey(right);
+  const sameCryptoEditorialFingerprint =
+    left.signalType === "crypto-liquidity" &&
+    right.signalType === "crypto-liquidity" &&
+    getCryptoEditorialFingerprint(left) === getCryptoEditorialFingerprint(right);
+  const sameCountries =
+    left.relatedCountries.map((country) => country.iso3).sort().join(",") ===
+    right.relatedCountries.map((country) => country.iso3).sort().join(",");
+  const sameTopics = [...left.topics].sort().join(",") === [...right.topics].sort().join(",");
+
+  if (sameSignal && sameCountries && sameTopics && overlap >= 0.6) {
+    return true;
+  }
+
+  if (sameCryptoThesis) {
+    return true;
+  }
+
+  if (sameCryptoEditorialFingerprint) {
+    return true;
+  }
+
+  if (sameSource && sameBucket && overlap >= 0.45) {
+    return true;
+  }
+
+  if (sameSource && sameBucket && sharedTokenCount >= 3) {
+    return true;
+  }
+
+  const normalizedLeftTitle = normalizeNewsText(left.title);
+  const normalizedRightTitle = normalizeNewsText(right.title);
+  if (
+    sameSource &&
+    sameBucket &&
+    (normalizedLeftTitle.includes(normalizedRightTitle) || normalizedRightTitle.includes(normalizedLeftTitle))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function dedupeNews(items: NewsItem[]) {
+  const ordered = sortNewsByPublishedAt(items);
+  const byCanonicalOrUrl = uniqueBy(
+    ordered,
+    (item) => item.canonicalUrl || item.url || `${item.sourceId}:${item.slug}`,
+  );
+  const selected: NewsItem[] = [];
+
+  for (const item of byCanonicalOrUrl) {
+    if (selected.some((selectedItem) => areLikelyDuplicateStories(selectedItem, item))) continue;
+    selected.push(item);
+  }
+
+  return selected;
 }
 
 function takeUniqueDiverse(candidates: NewsItem[], limit: number, maxPerSource = 2) {
@@ -1588,6 +2379,7 @@ function takeUniqueDiverse(candidates: NewsItem[], limit: number, maxPerSource =
 
   for (const item of candidates) {
     if (selected.some((selectedItem) => selectedItem.id === item.id)) continue;
+    if (selected.some((selectedItem) => areLikelyDuplicateStories(selectedItem, item))) continue;
     const sourceCount = perSource.get(item.sourceId) ?? 0;
     if (sourceCount >= maxPerSource) continue;
 
@@ -1734,6 +2526,10 @@ function getTopicStoryBucket(topic: NewsTopic, item: NewsItem) {
 }
 
 function prioritizeTopicStories(topic: NewsTopic, candidates: NewsItem[], limit: number) {
+  if (topic === "crypto") {
+    return prioritizeCryptoStories(candidates, limit);
+  }
+
   const ordered = sortNewsByPublishedAt(candidates);
   const seeded: NewsItem[] = [];
   const seenBuckets = new Set<string>();
@@ -1824,9 +2620,23 @@ function prioritizeCryptoStories(candidates: NewsItem[], limit: number) {
     }
   }
 
-  return sortNewsByPublishedAt(
-    takeUniqueDiverse([...seeded, ...ordered], limit, 3),
-  );
+  const pool = sortNewsByPublishedAt(takeUniqueDiverse([...seeded, ...ordered], limit * 2, 3));
+  const selected: NewsItem[] = [];
+  const seenBuckets = new Set<string>();
+  const seenTheses = new Set<string>();
+
+  for (const item of pool) {
+    const bucket = getCryptoStoryBucket(item);
+    const thesis = getCryptoThesisKey(item);
+    if (seenBuckets.has(bucket)) continue;
+    if (seenTheses.has(thesis)) continue;
+    selected.push(item);
+    seenBuckets.add(bucket);
+    seenTheses.add(thesis);
+    if (selected.length >= limit) break;
+  }
+
+  return sortNewsByPublishedAt(selected);
 }
 
 export const getMacroNews = cache(async function getMacroNews() {
@@ -1954,6 +2764,10 @@ export const getNewsSections = cache(async function getNewsSections() {
             (item.topics.includes("crypto") ||
               item.assetClasses.includes("crypto") ||
               item.sourceId === "coindesk" ||
+              item.sourceId === "cointelegraph" ||
+              item.sourceId === "cryptonews" ||
+              item.sourceId === "messari" ||
+              item.sourceId === "freeCryptoNews" ||
               item.sourceId === "marketaux" ||
               item.sourceId === "investing"),
         ),
@@ -2000,7 +2814,11 @@ export async function getNewsByTopic(topic: NewsTopic) {
       item.topics.includes("crypto") ||
       item.assetClasses.includes("crypto") ||
       item.signalType === "crypto-liquidity" ||
-      item.sourceId === "coindesk",
+      item.sourceId === "coindesk" ||
+      item.sourceId === "cointelegraph" ||
+      item.sourceId === "cryptonews" ||
+      item.sourceId === "messari" ||
+      item.sourceId === "freeCryptoNews",
     energy: (item) =>
       item.topics.includes("energy") ||
       item.title.toLowerCase().includes("oil") ||
