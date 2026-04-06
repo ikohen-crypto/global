@@ -199,7 +199,7 @@ Flujo:
    - `ECB` via RSS
    - `Fed` via RSS
    - `Investing` via varios RSS
-   - `CoinDesk` via RSS
+   - `CoinDesk`, `CoinTelegraph`, `Crypto.news`, `Messari`, `The Block`, `BeInCrypto`, `Blockworks`, `Bitcoin Magazine` y `U.Today` via RSS
    - `IMF` via HTML parsing
    - `Marketaux` via API si hay `MARKETAUX_API_KEY`
 4. Cada item se normaliza a `NewsItem`.
@@ -236,6 +236,15 @@ Flujo:
 - Federal Reserve
 - Investing.com
 - CoinDesk
+- CoinTelegraph
+- Crypto.news
+- Messari
+- The Block
+- BeInCrypto
+- Blockworks
+- Bitcoin Magazine
+- U.Today
+- Free Crypto News
 - Marketaux (opcional, con API key)
 
 ## Decisiones tecnicas clave
@@ -308,7 +317,7 @@ Esta lista esta pensada para que otra IA sepa donde todavia hay deuda tecnica o 
 - La calidad y cantidad de noticias depende bastante de la mezcla de fuentes activas en ese momento.
 - `Crypto` requiere vigilancia constante: las fuentes cripto tienden a repetir temas parecidos.
 - `Marketaux` mejora variedad, pero solo si el token existe y la query devuelve material reciente.
-- `Cointelegraph` se evaluo como posible fuente adicional, pero no quedo integrada.
+- La mayor cantidad de fuentes crypto mejora variedad, pero exige seguir vigilando deduplicacion, mezcla ingles/espanol y repeticion de tesis.
 
 ### Rankings
 

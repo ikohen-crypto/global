@@ -11,7 +11,7 @@ export async function getCountries() {
 }
 
 export async function getHeaderCountries() {
-  return countryCatalog;
+  return getCountriesCached();
 }
 
 export async function getSearchCountries() {

@@ -1,4 +1,5 @@
 import { allIndicators } from "@/lib/indicators/registry";
+import { formatPopulation } from "@/lib/formatters";
 import { toKebabCase, uniqueBy } from "@/lib/utils";
 import type { CountrySummary, SearchEntity } from "@/lib/types";
 
@@ -9,12 +10,15 @@ export function buildSearchIndex(countries: CountrySummary[]): SearchEntity[] {
     title: country.name,
     subtitle: `${country.region} • ${country.iso3}`,
     href: `/country/${country.slug}`,
+    population: country.population ?? null,
+    populationLabel: country.population != null ? formatPopulation(country.population) : null,
     keywords: [
       country.name,
       country.iso3,
       country.iso2,
       country.region,
       country.subregion,
+      country.capital,
     ],
   }));
 

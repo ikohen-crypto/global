@@ -8,6 +8,8 @@ import {
   getLocalizedNewsSummarySafe,
   getLocalizedNewsTitle,
   getLocalizedNewsTitleSafe,
+  shouldKeepInLatestMixedSection,
+  shouldKeepOutsideCryptoSection,
 } from "@/lib/news/rss";
 import type { NewsItem } from "@/lib/types";
 
@@ -159,6 +161,31 @@ describe("news classification", () => {
     expect(result[0]?.id).toBe("rss-2");
   });
 
+  it("dedupes same-url stories from newly added crypto rss sources", () => {
+    const first = buildItem({
+      id: "new-rss-1",
+      sourceId: "theblock",
+      source: "The Block",
+      signalType: "crypto-liquidity",
+      topics: ["crypto"],
+      url: "https://example.com/shared-new-crypto-story",
+    });
+    const second = buildItem({
+      id: "new-rss-2",
+      sourceId: "blockworks",
+      source: "Blockworks",
+      signalType: "crypto-liquidity",
+      topics: ["crypto"],
+      url: "https://example.com/shared-new-crypto-story",
+      publishedAt: "2026-01-03T08:00:00.000Z",
+    });
+
+    const result = dedupeNews([first, second]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe("new-rss-1");
+  });
+
   it("dedupes same-source crypto stories that describe the same setup across days", () => {
     const older = buildItem({
       id: "btc-older",
@@ -249,9 +276,10 @@ describe("news classification", () => {
   it("adds investor context to localized summaries", () => {
     const summary = getLocalizedNewsSummarySafe(buildItem(), "es");
 
-    expect(summary).toContain("aporta una senal de presion inflacionaria");
-    expect(summary).toContain("puede cambiar el escenario de inflacion y tasas");
-    expect(summary).toContain("La inflacion cambia la trayectoria esperada de tasas");
+    expect(summary).toContain("inflacion");
+    expect(summary).not.toContain("La noticia se enfoca en");
+    expect(summary).not.toContain("La noticia se centra en");
+    expect(summary).not.toContain("Esto impacta");
   });
 
   it("keeps crypto localized titles in spanish", () => {
@@ -266,6 +294,43 @@ describe("news classification", () => {
     });
 
     expect(getLocalizedNewsTitleSafe(item, "es")).toMatch(/^Bitcoin (sube|rebota) con foco en flujos de ETF$/);
+  });
+
+  it("forces editorial spanish fallback for newer dedicated crypto sources", () => {
+    const item = buildItem({
+      signalType: "crypto-liquidity",
+      title: "Ethereum update: traders see rebound ahead of ETF decision",
+      summary: "Market participants watch liquidity and regulation as ethereum markets react.",
+      sourceId: "cryptonews",
+      source: "Crypto.news",
+      topics: ["crypto"],
+    });
+
+    const title = getLocalizedNewsTitleSafe(item, "es");
+    const summary = getLocalizedNewsSummarySafe(item, "es");
+
+    expect(title).toMatch(/^Ethereum (sube|rebota|bajo foco) /);
+    expect(summary).not.toContain("traders");
+    expect(summary).not.toContain("Market participants");
+    expect(summary).toContain("liquidez");
+  });
+
+  it("uses editorial spanish fallback for newly added rss crypto sources", () => {
+    const item = buildItem({
+      signalType: "crypto-liquidity",
+      title: "Bitcoin rebounds as traders eye ETF flows ahead of policy week",
+      summary: "Markets watch liquidity and regulation as bitcoin sentiment improves.",
+      sourceId: "theblock",
+      source: "The Block",
+      topics: ["crypto"],
+    });
+
+    const title = getLocalizedNewsTitleSafe(item, "es");
+    const summary = getLocalizedNewsSummarySafe(item, "es");
+
+    expect(title).toMatch(/^Bitcoin (sube|rebota|bajo foco) /);
+    expect(summary).not.toContain("traders");
+    expect(summary).toContain("liquidez");
   });
 
   it("avoids raw english fragments in spanish summaries", () => {
@@ -300,7 +365,51 @@ describe("news classification", () => {
 
     expect(narrative.why).toContain("flujos de ETF");
     expect(narrative.watch).toContain("flujos de ETF");
-    expect(narrative.watch).toContain("dolar");
+    expect(narrative.watch.toLowerCase()).toMatch(/d[oó]lar/);
+  });
+
+  it("avoids banned template phrases in localized crypto copy", () => {
+    const item = buildItem({
+      signalType: "crypto-liquidity",
+      title: "Bitcoin rallies as ETF flows rebound and traders cut rate fears",
+      summary: "Crypto markets move higher after stronger ETF inflows and looser liquidity expectations.",
+      sourceId: "coindesk",
+      source: "CoinDesk",
+      topics: ["crypto"],
+    });
+
+    const summary = getLocalizedNewsSummarySafe(item, "es").toLowerCase();
+    const narrative = getLocalizedNewsNarrativeSafe(item, "es");
+    const combined = `${summary} ${narrative.happened} ${narrative.why} ${narrative.watch}`.toLowerCase();
+
+    expect(combined).not.toContain("destaca un movimiento");
+    expect(combined).not.toContain("la noticia se enfoca en");
+    expect(combined).not.toContain("esto impacta");
+    expect(combined).not.toContain("en este contexto");
+    expect(combined).not.toContain("es importante porque");
+    expect(combined).not.toContain("podria afectar");
+  });
+
+  it("varies localized narrative structure across different signal types", () => {
+    const inflationItem = buildItem({
+      id: "inflation-structure",
+      signalType: "inflation-pressure",
+      topics: ["inflation"],
+      summary: "Inflation data comes in hotter than expected.",
+    });
+    const debtItem = buildItem({
+      id: "debt-structure",
+      signalType: "debt-risk",
+      topics: ["debt"],
+      summary: "Debt refinancing concerns build after weaker demand.",
+    });
+
+    const inflationNarrative = getLocalizedNewsNarrativeSafe(inflationItem, "es");
+    const debtNarrative = getLocalizedNewsNarrativeSafe(debtItem, "es");
+
+    expect(inflationNarrative.happened).not.toBe(debtNarrative.happened);
+    expect(inflationNarrative.why).not.toBe(debtNarrative.why);
+    expect(inflationNarrative.watch).not.toBe(debtNarrative.watch);
   });
 
   it("avoids redundant stablecoin wording in crypto titles", () => {
@@ -366,5 +475,44 @@ describe("news classification", () => {
     expect(getLocalizedNewsTitle("Growth improves in United States as inflation cools", "es")).toContain(
       "Estados Unidos",
     );
+  });
+
+  it("keeps dedicated crypto sources out of macro sections", () => {
+    const item = buildItem({
+      sourceId: "theblock",
+      source: "The Block",
+      signalType: "crypto-liquidity",
+      topics: ["crypto"],
+      assetClasses: ["crypto", "macro"],
+      importance: "high",
+    });
+
+    expect(shouldKeepOutsideCryptoSection(item)).toBe(false);
+  });
+
+  it("allows only the most relevant dedicated crypto stories into latest mixed", () => {
+    const highValueItem = buildItem({
+      title: "Bitcoin rebounds as ETF flows improve",
+      summary: "Liquidity and ETF demand improve for bitcoin.",
+      sourceId: "theblock",
+      source: "The Block",
+      signalType: "crypto-liquidity",
+      topics: ["crypto"],
+      assetClasses: ["crypto", "macro"],
+      importance: "high",
+    });
+    const lowValueItem = buildItem({
+      title: "Crypto update as traders watch sentiment",
+      summary: "General market chatter with no clear ETF, stablecoin or regulation angle.",
+      sourceId: "theblock",
+      source: "The Block",
+      signalType: "crypto-liquidity",
+      topics: ["crypto"],
+      assetClasses: ["crypto", "macro"],
+      importance: "medium",
+    });
+
+    expect(shouldKeepInLatestMixedSection(highValueItem)).toBe(true);
+    expect(shouldKeepInLatestMixedSection(lowValueItem)).toBe(false);
   });
 });

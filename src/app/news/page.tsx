@@ -68,12 +68,17 @@ export default async function NewsPage() {
             ecb: getLocalizedNewsSourceLabelSafe("ecb", locale),
             fed: getLocalizedNewsSourceLabelSafe("fed", locale),
             investing: getLocalizedNewsSourceLabelSafe("investing", locale),
+            coindesk: getLocalizedNewsSourceLabelSafe("coindesk", locale),
             cointelegraph: getLocalizedNewsSourceLabelSafe("cointelegraph", locale),
             cryptonews: getLocalizedNewsSourceLabelSafe("cryptonews", locale),
             messari: getLocalizedNewsSourceLabelSafe("messari", locale),
+            theblock: getLocalizedNewsSourceLabelSafe("theblock", locale),
+            beincrypto: getLocalizedNewsSourceLabelSafe("beincrypto", locale),
+            blockworks: getLocalizedNewsSourceLabelSafe("blockworks", locale),
+            bitcoinmagazine: getLocalizedNewsSourceLabelSafe("bitcoinmagazine", locale),
+            utoday: getLocalizedNewsSourceLabelSafe("utoday", locale),
             freeCryptoNews: getLocalizedNewsSourceLabelSafe("freeCryptoNews", locale),
             marketaux: getLocalizedNewsSourceLabelSafe("marketaux", locale),
-            coindesk: getLocalizedNewsSourceLabelSafe("coindesk", locale),
           }}
         />
       ) : (

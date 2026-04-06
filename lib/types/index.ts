@@ -151,6 +151,8 @@ export type SearchEntity =
       subtitle: string;
       href: string;
       keywords: string[];
+      population: number | null;
+      populationLabel?: string | null;
     }
   | {
       type: "indicator" | "region" | "compare";
@@ -159,6 +161,8 @@ export type SearchEntity =
       subtitle: string;
       href: string;
       keywords: string[];
+      population?: never;
+      populationLabel?: never;
     };
 
 export type Insight = {
@@ -204,9 +208,34 @@ export type NewsSourceId =
   | "cointelegraph"
   | "cryptonews"
   | "messari"
+  | "theblock"
+  | "beincrypto"
+  | "blockworks"
+  | "bitcoinmagazine"
+  | "utoday"
   | "freeCryptoNews";
 
 export type NewsSourceType = "rss" | "html" | "api";
+
+export type NewsDuplicateDebug = {
+  comparedArticleId: string;
+  matchedArticleId: string;
+  score: number;
+  reasons: string[];
+  matchedFields: string[];
+};
+
+export type NewsCluster = {
+  id: string;
+  representativeArticleId: string;
+  clusterArticleIds: string[];
+  alternateSources: string[];
+  alternateTitles: string[];
+  earliestPublishedAt: string;
+  latestPublishedAt: string;
+  articleCount: number;
+  sourceCount: number;
+};
 
 export type NewsItem = {
   id: string;
@@ -234,4 +263,22 @@ export type NewsItem = {
   tags?: string[];
   tickers?: string[];
   sentiment?: string | null;
+  originalUrl?: string;
+  normalizedUrl?: string;
+  canonicalUrlNormalized?: string | null;
+  clusterId?: string | null;
+  clusterRepresentativeArticleId?: string | null;
+  clusterArticleIds?: string[];
+  alternateSources?: string[];
+  alternateTitles?: string[];
+  sourceCount?: number;
+  articleCount?: number;
+  earliestPublishedAt?: string;
+  latestPublishedAt?: string;
+  representativeReason?: string | null;
+  duplicateReason?: string | null;
+  wasHiddenAsDuplicate?: boolean;
+  duplicateType?: "exact" | "fuzzy" | "template" | "cluster" | null;
+  representativeArticleId?: string | null;
+  duplicateDebug?: NewsDuplicateDebug[];
 };

@@ -37,18 +37,22 @@ export function Header({ countries }: { countries: CountrySummary[] }) {
       suppressHydrationWarning
       className="sticky top-0 z-40 border-b border-border/70 bg-background/85 backdrop-blur-xl"
     >
-      <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-4 sm:px-6 lg:px-8">
-        <Link href="/" className="flex items-center gap-3">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:gap-6 lg:px-8">
+        <div className="min-w-0 shrink-0 lg:w-[14rem] xl:w-[18rem]">
+        <Link href="/" className="flex min-w-0 items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-soft">
             <span className="font-display text-lg font-semibold">GE</span>
           </div>
-          <div>
-            <div className="font-display text-lg font-semibold">GlobalEcon</div>
-            <div className="text-xs text-muted-foreground">{messages.nav.subtitle}</div>
+          <div className="min-w-0 overflow-hidden">
+            <div className="truncate font-display text-lg font-semibold">GlobalEcon</div>
+            <div className="hidden overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground xl:block">
+              {messages.nav.subtitle}
+            </div>
           </div>
         </Link>
+        </div>
 
-        <nav className="hidden flex-1 items-center justify-center gap-1 lg:flex">
+        <nav className="hidden min-w-0 flex-1 items-center justify-center gap-1 lg:flex">
           {navItems.map((item) => (
             <Link
               key={item.href}
@@ -61,12 +65,16 @@ export function Header({ countries }: { countries: CountrySummary[] }) {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-2">
-          <SearchCommand triggerClassName="hidden sm:inline-flex" countries={countries} />
-          <LanguageToggle />
+        <div className="ml-auto flex min-w-0 shrink-0 items-center justify-end gap-2 lg:ml-0 lg:w-[22rem] lg:gap-3">
+          <SearchCommand
+            triggerClassName="hidden h-10 min-w-0 flex-1 sm:flex sm:max-w-[18rem] sm:shrink"
+            countries={countries}
+          />
+          <LanguageToggle className="shrink-0" />
           <Button
             variant="outline"
             size="icon"
+            className="shrink-0"
             aria-label={messages.nav.themeToggle}
             onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
           >

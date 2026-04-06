@@ -2,7 +2,9 @@
 
 import { countryCatalog } from "@/lib/data/countryCatalog";
 import { getIndicatorDefinition } from "@/lib/indicators/registry";
+import { dedupeFeed } from "@/lib/news/dedupe";
 import type { Locale } from "@/lib/i18n";
+import { newsSectionCopy } from "@/lib/news/sections";
 import { newsSourceDefinitions } from "@/lib/news/sources";
 import { allNewsTopics, newsTopicDefinitions } from "@/lib/news/topics";
 import { toKebabCase, uniqueBy } from "@/lib/utils";
@@ -99,6 +101,51 @@ function buildStableHash(value: string) {
   }
 
   return hash.toString(16);
+}
+
+const bannedEditorialPhrases = [
+  "destaca un movimiento",
+  "la noticia se enfoca en",
+  "esto impacta",
+  "en este contexto",
+  "es importante porque",
+  "podria afectar",
+  "podría afectar",
+] as const;
+
+function variantIndex(seed: string, size: number) {
+  if (size <= 1) return 0;
+  return parseInt(buildStableHash(seed).slice(0, 8), 16) % size;
+}
+
+function pickVariant<T>(seed: string, variants: readonly T[]) {
+  return variants[variantIndex(seed, variants.length)]!;
+}
+
+function sanitizeEditorialCopy(text: string) {
+  let sanitized = text;
+
+  for (const phrase of bannedEditorialPhrases) {
+    sanitized = sanitized.replace(new RegExp(phrase, "gi"), "");
+  }
+
+  return sanitized
+    .replace(/\s+/g, " ")
+    .replace(/\s([,.;:])/g, "$1")
+    .trim();
+}
+
+function finalizeEditorialCopy(text: string, maxLength = 280) {
+  return clampText(sanitizeEditorialCopy(text), maxLength);
+}
+
+function composeSentences(parts: Array<string | null | undefined>, maxLength = 280) {
+  const unique = parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .filter((part, index, array) => array.indexOf(part) === index);
+
+  return finalizeEditorialCopy(unique.join(" "), maxLength);
 }
 
 function extractItems(xml: string) {
@@ -484,36 +531,66 @@ function computeRelevanceScore(
 }
 
 function buildWhyItMatters(signalType: NewsSignalType, countries: CountrySummary[]) {
+  const countryLabel = countries.slice(0, 2).map((country) => country.name).join(" and ");
+  const seed = `${signalType}|${countryLabel || "global"}`;
+
   if (signalType === "central-bank-shift") {
-    return "Central-bank moves can reprice yields, FX, credit conditions, and valuation multiples very quickly.";
+    return pickVariant(seed, [
+      "Rate expectations can reprice yields, FX, and equity multiples very quickly after a policy signal.",
+      "A policy shift changes the cost of money fast, which feeds straight into bonds, currencies, and risk appetite.",
+      `Central-bank guidance can alter funding conditions${countryLabel ? ` for ${countryLabel}` : ""} before the hard data catches up.`,
+    ]);
   }
 
   if (signalType === "inflation-pressure") {
-    return "Inflation pressure changes rate expectations, real returns, and margin visibility across markets.";
+    return pickVariant(seed, [
+      "Sticky price pressure resets rate expectations, real returns, and equity valuation support.",
+      "Inflation surprises matter because they shift the path for rates, margins, and discount rates at the same time.",
+      `Price pressure can change the near-term market read${countryLabel ? ` on ${countryLabel}` : ""} through rates and real yields.`,
+    ]);
   }
 
   if (signalType === "currency-stress") {
-    return "Currency stress matters for imported inflation, hard-currency returns, and sovereign risk perception.";
+    return pickVariant(seed, [
+      "FX stress feeds directly into imported inflation, hard-currency returns, and sovereign risk pricing.",
+      "A weaker currency usually tightens the macro backdrop through inflation pass-through and funding pressure.",
+      `Currency pressure can reset risk perception${countryLabel ? ` in ${countryLabel}` : ""} long before growth data rolls over.`,
+    ]);
   }
 
   if (signalType === "debt-risk") {
-    return "Debt stress can weaken the currency, raise refinancing risk, and compress investor appetite.";
+    return pickVariant(seed, [
+      "Debt stress matters when refinancing risk, sovereign spreads, and currency pressure start reinforcing each other.",
+      "Once funding conditions deteriorate, sovereign risk can spill into FX, local rates, and broader positioning.",
+      `Debt headlines matter${countryLabel ? ` for ${countryLabel}` : ""} when rollover risk begins to dominate the market read.`,
+    ]);
   }
 
   if (signalType === "crypto-liquidity") {
-    return "Crypto-sensitive macro news matters when liquidity, rate expectations, and hedge demand start to shift.";
+    return pickVariant(seed, [
+      "Digital assets tend to react early when liquidity, real yields, or institutional flows start to move.",
+      "This setup matters if the market is repricing liquidity, regulation, or hedge demand across crypto.",
+      "Crypto usually feels shifts in rate expectations and risk appetite before the rest of the cross-asset complex settles.",
+    ]);
   }
 
   if (countries.length > 0) {
-    return "This macro headline can change the near-term investment case for the linked countries and sectors.";
+    return pickVariant(seed, [
+      `This headline can change the near-term investment read on ${countryLabel} and linked sectors.`,
+      `The story matters because it can reprice the short-term macro setup around ${countryLabel}.`,
+      `Markets can reassess growth, rates, or country risk quickly when a headline like this hits ${countryLabel}.`,
+    ]);
   }
 
-  return "This macro headline can change rates, currencies, and country-risk expectations even before hard data moves.";
+  return pickVariant(seed, [
+    "Macro headlines can move rates, currencies, and risk expectations before the hard data turns.",
+    "This kind of story often changes positioning first and only later shows up in the broad data.",
+    "When the macro narrative shifts, markets usually reprice faster than the underlying indicators.",
+  ]);
 }
 
 function buildWhatHappened(title: string, summary: string) {
-  const text = summary || title;
-  return text.length > 180 ? `${text.slice(0, 177).trim()}...` : text;
+  return clampText((summary || title).replace(/\s+/g, " ").trim(), 180);
 }
 
 const fedHighSignalKeywords = ["fomc", "economic projections", "minutes", "rate", "rates", "discount rate"] as const;
@@ -996,6 +1073,35 @@ function classifyCryptoRssEntry(entry: ParsedFeedEntry) {
   return classifyCoinDeskEntry(entry);
 }
 
+function isDedicatedCryptoRssSource(sourceId: NewsSourceId) {
+  return (
+    sourceId === "cointelegraph" ||
+    sourceId === "cryptonews" ||
+    sourceId === "messari" ||
+    sourceId === "theblock" ||
+    sourceId === "beincrypto" ||
+    sourceId === "blockworks" ||
+    sourceId === "bitcoinmagazine" ||
+    sourceId === "utoday"
+  );
+}
+
+function isDedicatedCryptoSource(sourceId: NewsSourceId) {
+  return isDedicatedCryptoRssSource(sourceId) || sourceId === "coindesk" || sourceId === "freeCryptoNews";
+}
+
+export function shouldKeepOutsideCryptoSection(item: NewsItem) {
+  return !isDedicatedCryptoSource(item.sourceId);
+}
+
+export function shouldKeepInLatestMixedSection(item: NewsItem) {
+  if (!isDedicatedCryptoSource(item.sourceId)) {
+    return true;
+  }
+
+  return item.importance === "high" && isHighValueCryptoStory(item);
+}
+
 function shouldKeepSourceEntry(sourceId: NewsSourceId, entry: ParsedFeedEntry) {
   if (sourceId === "imf") {
     return /\/en\/news\/articles\/\d{4}\/\d{2}\/\d{2}\/(pr|cs|cf|sp)/i.test(entry.url);
@@ -1042,7 +1148,7 @@ function shouldKeepSourceEntry(sourceId: NewsSourceId, entry: ParsedFeedEntry) {
     return investingMacroKeywords.some((keyword) => haystack.includes(keyword));
   }
 
-  if (sourceId === "coindesk") {
+  if (sourceId === "coindesk" || isDedicatedCryptoRssSource(sourceId)) {
     const haystack = `${entry.title} ${entry.summary} ${entry.url}`.toLowerCase();
     return (
       haystack.includes("bitcoin") ||
@@ -1335,12 +1441,17 @@ function hasVisibleEnglishResidue(text: string) {
     " the ",
     " and ",
     " with ",
+    " amid ",
+    " ahead of ",
     " after ",
     " while ",
-    " trader ",
-    " traders ",
+    " sees ",
+    " update ",
+    " outlook ",
     " market ",
     " markets ",
+    " trader ",
+    " traders ",
     " fears ",
     " worries ",
     " return ",
@@ -1354,6 +1465,30 @@ function hasVisibleEnglishResidue(text: string) {
   ];
   const normalized = ` ${text.toLowerCase()} `;
   return englishMarkers.some((marker) => normalized.includes(marker));
+}
+
+function isCryptoEditorialSource(sourceId: NewsSourceId) {
+  return (
+    sourceId === "coindesk" ||
+    sourceId === "cointelegraph" ||
+    sourceId === "cryptonews" ||
+    sourceId === "messari" ||
+    sourceId === "theblock" ||
+    sourceId === "beincrypto" ||
+    sourceId === "blockworks" ||
+    sourceId === "bitcoinmagazine" ||
+    sourceId === "utoday" ||
+    sourceId === "freeCryptoNews"
+  );
+}
+
+function shouldUseCryptoSpanishEditorialFallback(item: NewsItem, localizedTitle: string, localizedSummary?: string) {
+  if (isCryptoEditorialSource(item.sourceId)) {
+    return true;
+  }
+
+  const combinedText = localizedSummary ? `${localizedTitle} ${localizedSummary}` : localizedTitle;
+  return hasVisibleEnglishResidue(combinedText);
 }
 
 export function getLocalizedNewsExcerpt(text: string, locale: Locale) {
@@ -1372,6 +1507,11 @@ export function getLocalizedNewsSourceLabelSafe(sourceId: NewsSourceId, locale: 
       cointelegraph: "CoinTelegraph",
       cryptonews: "Crypto.news",
       messari: "Messari",
+      theblock: "The Block",
+      beincrypto: "BeInCrypto",
+      blockworks: "Blockworks",
+      bitcoinmagazine: "Bitcoin Magazine",
+      utoday: "U.Today",
       freeCryptoNews: "Free Crypto News",
       marketaux: "Mercados globales",
     }
@@ -1384,6 +1524,11 @@ export function getLocalizedNewsSourceLabelSafe(sourceId: NewsSourceId, locale: 
         cointelegraph: "CoinTelegraph",
         cryptonews: "Crypto.news",
         messari: "Messari",
+        theblock: "The Block",
+        beincrypto: "BeInCrypto",
+        blockworks: "Blockworks",
+        bitcoinmagazine: "Bitcoin Magazine",
+        utoday: "U.Today",
         freeCryptoNews: "Free Crypto News",
         marketaux: "Marketaux",
       };
@@ -1395,7 +1540,12 @@ export function getLocalizedNewsSummarySafe(item: NewsItem, locale: Locale) {
   if (locale !== "es") {
     const happened = getLocalizedNewsExcerpt(item.whatHappened || item.summary || item.title, locale);
     const narrative = getLocalizedNewsNarrativeSafe(item, locale);
-    return `${happened} ${narrative.why}`.replace(/\s+/g, " ").trim();
+    const structure = pickVariant(`${item.id}|summary|${locale}`, [
+      [happened, narrative.why],
+      [narrative.why, happened],
+      [happened, narrative.watch],
+    ]);
+    return composeSentences(structure, 280);
   }
 
   const subject = inferSpanishHeadlineSubject(item);
@@ -1417,19 +1567,25 @@ export function getLocalizedNewsSummarySafe(item: NewsItem, locale: Locale) {
   const focus = subject || topicLabel;
 
   const summary = {
-    "central-bank-shift": `La noticia se centra en politica monetaria, tasas o guidance oficial con impacto potencial sobre bonos, monedas y acciones en ${countryLabel}.`,
-    "inflation-pressure": `La noticia apunta a precios, expectativas o costos y puede cambiar el escenario de inflacion y tasas para ${countryLabel}.`,
-    "currency-stress": `La noticia muestra tension cambiaria alrededor de ${focus}, algo clave para seguir tipo de cambio, inflacion importada y activos en moneda dura.`,
-    "debt-risk": `La noticia gira en torno a deuda, refinanciacion o fragilidad fiscal en ${countryLabel}, con efecto potencial sobre spreads y acceso al financiamiento.`,
-    "growth-slowdown": `La noticia sugiere una desaceleracion de la actividad o un deterioro del impulso economico en ${countryLabel}.`,
-    "growth-improvement": `La noticia sugiere una mejora de crecimiento o una lectura mas constructiva para actividad y apetito por riesgo en ${countryLabel}.`,
-    "crypto-liquidity": `La noticia se enfoca en ${focus} y su posible impacto sobre BTC, ETH, liquidez, regulacion y flujos hacia activos digitales.`,
+    "central-bank-shift": `El mercado vuelve a mirar tasas, guidance y sensibilidad de bonos, monedas y acciones en ${countryLabel}.`,
+    "inflation-pressure": `Precios, expectativas o costos vuelven a meter presion sobre el escenario de inflacion y tasas en ${countryLabel}.`,
+    "currency-stress": `${focus} pasa a ser una referencia para seguir tipo de cambio, inflacion importada y activos en moneda dura.`,
+    "debt-risk": `La lectura ahora pasa por deuda, refinanciacion y acceso al financiamiento en ${countryLabel}.`,
+    "growth-slowdown": `La actividad pierde traccion o muestra un deterioro del impulso economico en ${countryLabel}.`,
+    "growth-improvement": `La actividad deja una lectura mas constructiva para crecimiento y apetito por riesgo en ${countryLabel}.`,
+    "crypto-liquidity": `${focus} vuelve a cruzarse con liquidez, regulacion y flujos dentro de activos digitales.`,
   }[item.signalType];
 
   const narrative = getLocalizedNewsNarrativeSafe(item, locale);
   const happenedLead =
     item.signalType === "crypto-liquidity" ? buildCryptoSpanishLead(item) : narrative.happened;
-  return `${happenedLead} ${summary} ${narrative.why}`.replace(/\s+/g, " ").trim();
+  const structure = pickVariant(`${item.id}|summary|es|${item.signalType}`, [
+    [happenedLead, summary, narrative.why],
+    [summary, happenedLead, narrative.watch],
+    [narrative.why, happenedLead],
+    [happenedLead, narrative.watch],
+  ]);
+  return composeSentences(structure, 320);
 }
 
 function inferSpanishHeadlineSubject(item: NewsItem) {
@@ -1549,7 +1705,7 @@ function buildCryptoSpanishEditorialTitle(item: NewsItem) {
 
 function buildCryptoSpanishDisplayTitle(item: NewsItem) {
   const localizedSourceTitle = getLocalizedNewsTitle(item.title, "es");
-  return item.sourceId === "coindesk" || hasVisibleEnglishResidue(localizedSourceTitle)
+  return shouldUseCryptoSpanishEditorialFallback(item, localizedSourceTitle)
     ? buildCryptoSpanishEditorialTitle(item)
     : localizedSourceTitle;
 }
@@ -1563,10 +1719,15 @@ function buildCryptoSpanishLead(item: NewsItem) {
   const readableSubject = subject === "stablecoins" ? "el segmento de stablecoins" : subject;
   const readableAngle =
     subject === "stablecoins" && angle === "stablecoins" ? "liquidez y regulacion" : angle;
-  const combined = hasVisibleEnglishResidue(`${localizedSourceTitle} ${localizedSourceSummary}`)
-    ? `${sourceLabel} destaca un movimiento en ${readableSubject} con foco en ${readableAngle} y su posible traslado a liquidez y apetito por riesgo.`
+  const combined = shouldUseCryptoSpanishEditorialFallback(item, localizedSourceTitle, localizedSourceSummary)
+    ? pickVariant(`${item.id}|crypto-lead|${readableSubject}|${readableAngle}`, [
+        `${readableSubject} vuelve al centro de la escena por ${readableAngle}.`,
+        `El mercado digital reordena posiciones alrededor de ${readableSubject} y ${readableAngle}.`,
+        `${sourceLabel} pone sobre la mesa una lectura táctica sobre ${readableSubject} y ${readableAngle}.`,
+        `${readableAngle} vuelve a marcar el tono alrededor de ${readableSubject}.`,
+      ])
     : `${localizedSourceTitle}. ${localizedSourceSummary}`;
-  return combined.length > 260 ? `${combined.slice(0, 257).trim()}...` : combined;
+  return finalizeEditorialCopy(combined, 260);
 }
 
 function getCryptoEditorialFingerprint(item: NewsItem) {
@@ -1578,50 +1739,117 @@ function getCryptoEditorialFingerprint(item: NewsItem) {
     .trim();
 }
 
+function collapseCryptoEditorialDuplicates(items: NewsItem[]) {
+  const ordered = sortNewsByPublishedAt(items);
+  const seenCryptoKeys = new Set<string>();
+  const selected: NewsItem[] = [];
+
+  for (const item of ordered) {
+    if (item.signalType !== "crypto-liquidity") {
+      selected.push(item);
+      continue;
+    }
+
+    const keys = [getCryptoThesisKey(item), getCryptoEditorialFingerprint(item)].filter(Boolean);
+    if (keys.some((key) => seenCryptoKeys.has(key))) {
+      continue;
+    }
+
+    selected.push(item);
+    for (const key of keys) {
+      seenCryptoKeys.add(key);
+    }
+  }
+
+  return selected;
+}
+
 function buildCryptoSpanishPracticalWhy(item: NewsItem) {
   const subject = inferSpanishHeadlineSubject(item);
   const angle = inferCryptoSpanishAngle(item);
+  const seed = `${item.id}|why|${subject}|${angle}`;
 
   if (angle === "flujos de ETF") {
-    return `${subject} gana o pierde respaldo marginal cuando cambian los flujos de ETF, porque eso altera demanda spot, sentimiento y capacidad de extender el movimiento.`;
+    return pickVariant(seed, [
+      `${subject} cambia de tono cuando se mueven los flujos de ETF: ahí se juegan demanda spot, sentimiento y continuidad del movimiento.`,
+      `Los flujos de ETF pesan en ${subject} porque cambian la entrada marginal de capital y la calidad del rebote o de la corrección.`,
+      `Si los ETF aceleran o frenan, ${subject} suele sentirlo rápido en precio, posicionamiento y profundidad de mercado.`,
+    ]);
   }
 
   if (angle === "tasas") {
-    return `${subject} sigue sensible a tasas reales y expectativas de la Fed: si el mercado descuenta un giro menos restrictivo, crypto suele respirar mejor.`;
+    return pickVariant(seed, [
+      `${subject} sigue muy atado a tasas reales y expectativas de la Fed; cuando ese frente afloja, el riesgo suele respirar mejor.`,
+      `El cruce clave para ${subject} sigue siendo tasas reales contra liquidez: si el mercado modera el sesgo restrictivo, mejora el tono.`,
+      `Cuando baja la presión de tasas, ${subject} suele recuperar aire antes que otros activos de riesgo.`,
+    ]);
   }
 
   if (angle === "regulacion") {
-    return `La regulacion importa en ${subject} porque puede cambiar acceso, liquidez, custodia y velocidad de entrada de capital institucional.`;
+    return pickVariant(seed, [
+      `La regulación importa en ${subject} porque cambia acceso, custodia y velocidad de entrada del capital institucional.`,
+      `En ${subject}, el frente regulatorio puede mover liquidez disponible y confianza de inversores grandes en poco tiempo.`,
+      `Si cambia la regla de juego, ${subject} puede ver impacto directo en volumen, acceso y estructura de mercado.`,
+    ]);
   }
 
   if (angle === "liquidez") {
-    return `${subject} depende mucho de liquidez global y apetito por riesgo: cuando mejora el pulso financiero, los activos digitales suelen reaccionar primero.`;
+    return pickVariant(seed, [
+      `${subject} depende mucho del pulso de liquidez global; cuando mejora el apetito por riesgo, suele reaccionar primero.`,
+      `La liquidez manda en ${subject}: si aflojan yields y dólar, los activos digitales suelen captarlo antes que otros segmentos.`,
+      `Cuando mejora el telón de fondo financiero, ${subject} suele ser una de las primeras expresiones del cambio de tono.`,
+    ]);
   }
 
-  return `${subject} importa porque esta historia puede mover liquidez, apetito por riesgo y posicionamiento tactico dentro de crypto.`;
+  return pickVariant(seed, [
+    `${subject} entra en juego si esta historia mueve liquidez, volatilidad o posicionamiento táctico dentro de crypto.`,
+    `Esta lectura importa para ${subject} porque puede cambiar el balance entre flujo, riesgo y momentum en el mercado.`,
+    `${subject} queda sensible cuando una noticia altera liquidez, regulación o apetito por riesgo dentro del ecosistema.`,
+  ]);
 }
 
 function buildCryptoSpanishPracticalWatch(item: NewsItem) {
   const subject = inferSpanishHeadlineSubject(item);
   const angle = inferCryptoSpanishAngle(item);
+  const seed = `${item.id}|watch|${subject}|${angle}`;
 
   if (angle === "flujos de ETF") {
-    return `Mira si los flujos de ETF se sostienen durante varias sesiones, si BTC conserva momentum frente a ETH y si el dolar deja de endurecer las condiciones financieras.`;
+    return pickVariant(seed, [
+      "Mira si los flujos de ETF aguantan varias ruedas, si BTC mantiene el liderazgo frente a ETH y si el dólar deja de endurecer el fondo financiero.",
+      "La señal útil acá es continuidad: flujos de ETF en positivo, volumen firme y menos presión del dólar sobre condiciones financieras.",
+      "Conviene seguir flujos de ETF, momentum relativo entre BTC y ETH y reacción del dólar para ver si el movimiento tiene respaldo.",
+    ]);
   }
 
   if (angle === "tasas") {
-    return `Mira rendimientos reales de EE. UU., probabilidades implícitas de la Fed y comportamiento de BTC tras cada dato macro para validar si la lectura de tasas se sostiene.`;
+    return pickVariant(seed, [
+      "Mira rendimientos reales de EE. UU., probabilidades implícitas de la Fed y la reacción de BTC a cada dato macro.",
+      "La validación pasa por yields reales, precio del dólar y sensibilidad de BTC cuando salen datos de inflación o empleo.",
+      "Si el mercado sostiene la lectura de tasas, debería verse en yields reales más calmos y mejor respuesta de BTC al flujo macro.",
+    ]);
   }
 
   if (angle === "regulacion") {
-    return `Mira titulares regulatorios, reacción de exchanges y si ${subject} logra mantener soporte pese al ruido legal o político.`;
+    return pickVariant(seed, [
+      `Mira titulares regulatorios, reacción de exchanges y si ${subject} sostiene soporte pese al ruido legal o político.`,
+      `Lo importante ahora es seguir nuevas definiciones regulatorias, liquidez en exchanges y respuesta de ${subject}.`,
+      `Si la noticia escala, se va a notar en volumen, spreads y capacidad de ${subject} para absorber el ruido.`,
+    ]);
   }
 
   if (angle === "liquidez") {
-    return `Mira dolar, yields reales, spreads de crédito y volumen en BTC/ETH para ver si la mejora de liquidez llega de verdad al mercado crypto.`;
+    return pickVariant(seed, [
+      "Mira dólar, yields reales, spreads de crédito y volumen en BTC/ETH para ver si la mejora de liquidez llega de verdad a crypto.",
+      "La señal útil es cross-asset: menos presión en dólar y yields, más volumen y mejor respuesta en BTC/ETH.",
+      "Si el cambio de liquidez es real, debería verse al mismo tiempo en el dólar, en yields reales y en volumen del complejo crypto.",
+    ]);
   }
 
-  return `Mira BTC, ETH, volumen, dolar y tasas reales para confirmar si esta historia cambia de verdad el apetito por riesgo en crypto.`;
+  return pickVariant(seed, [
+    "Mira BTC, ETH, volumen, dólar y tasas reales para confirmar si el apetito por riesgo realmente cambia.",
+    "La validación pasa por precio, volumen y contexto financiero: BTC/ETH, dólar y yields reales.",
+    "Si la historia importa de verdad, debería reflejarse en volumen, liderazgo relativo y tono general del mercado.",
+  ]);
 }
 
 export function getLocalizedNewsTitleSafe(item: NewsItem, locale: Locale) {
@@ -1742,43 +1970,120 @@ export function getLocalizedNewsNarrativeSafe(item: NewsItem, locale: Locale) {
 
   if (locale === "es") {
     const sourceLabel = getLocalizedNewsSourceLabelSafe(item.sourceId, locale);
+    const seed = `${item.id}|narrative|${item.signalType}|es`;
 
     if (item.signalType === "crypto-liquidity") {
       return {
-        happened: `${sourceLabel} pone el foco en ${inferSpanishHeadlineSubject(item)} y en como un cambio de ${inferCryptoSpanishAngle(item)} puede mover el tono de mercado en crypto.`,
+        happened: pickVariant(seed, [
+          `${inferSpanishHeadlineSubject(item)} vuelve a ponerse tactico por ${inferCryptoSpanishAngle(item)}.`,
+          `${sourceLabel} reabre la discusion sobre ${inferSpanishHeadlineSubject(item)} en un momento sensible para ${inferCryptoSpanishAngle(item)}.`,
+          `${inferCryptoSpanishAngle(item)} pasa a marcar el tono alrededor de ${inferSpanishHeadlineSubject(item)}.`,
+        ]),
         why: buildCryptoSpanishPracticalWhy(item),
         watch: buildCryptoSpanishPracticalWatch(item),
       };
     }
 
     return {
-      happened: {
-        "central-bank-shift": `${sourceLabel} publico una actualizacion o comunicacion oficial capaz de mover rapido tasas, bonos, FX y valuaciones.`,
-        "inflation-pressure": `${sourceLabel} aporta una senal de presion inflacionaria o expectativas de precios que puede cambiar el escenario macro para ${countryLabel}.`,
-        "currency-stress": `${sourceLabel} muestra tension cambiaria o presion sobre la moneda, algo clave para seguir inflacion importada y activos en moneda dura.`,
-      "debt-risk": `${sourceLabel} senala riesgo de deuda, refinanciacion o fragilidad fiscal con impacto potencial sobre spreads y apetito por riesgo.`,
-      "growth-slowdown": `${sourceLabel} apunta a una desaceleracion del crecimiento o a un deterioro del impulso economico en ${countryLabel}.`,
-      "growth-improvement": `${sourceLabel} sugiere una mejora del crecimiento o una senal mas constructiva para la actividad y los activos vinculados en ${countryLabel}.`,
-      "crypto-liquidity": `${sourceLabel} conecta la macro con crypto, liquidez o regulacion de mercados digitales que puede afectar BTC, ETH y el apetito por riesgo.`,
-      }[item.signalType],
-      why: {
-        "central-bank-shift": "Estos cambios suelen mover expectativas de tasas, rendimientos, divisas y multiplos de mercado antes de que cambien los datos duros.",
-        "inflation-pressure": "La inflacion cambia la trayectoria esperada de tasas, el retorno real y la visibilidad de margenes en acciones y bonos.",
-        "currency-stress": "La presion cambiaria importa porque puede empeorar inflacion, deuda en moneda dura y percepcion de riesgo pais.",
-        "debt-risk": "Las noticias de deuda importan porque afectan refinanciacion, spreads soberanos, moneda y acceso al financiamiento.",
-        "growth-slowdown": "Una desaceleracion suele pegar primero en expectativas, utilidades, credito y posicionamiento de riesgo.",
-        "growth-improvement": "Una mejora del crecimiento puede favorecer demanda, utilidades y una lectura mas constructiva del riesgo macro.",
-        "crypto-liquidity": "Cuando cambia la liquidez o la regulacion macro, crypto suele reaccionar rapido junto con tasas reales y dolar.",
-      }[item.signalType],
-      watch: {
-        "central-bank-shift": "Segui tasas, rendimientos, tipo de cambio y sensibilidad de acciones locales para confirmar el impacto.",
-        "inflation-pressure": "Segui inflacion, tasas y expectativas de precios para ver si la presion persiste o empieza a moderarse.",
-        "currency-stress": "Segui FX, pass-through inflacionario y senales de tension financiera para medir si el shock se profundiza.",
-        "debt-risk": "Segui metricas de deuda, spreads, rollover y titulares de financiamiento para detectar deterioro adicional.",
-        "growth-slowdown": "Segui crecimiento, empleo, actividad y guias oficiales para ver si la desaceleracion se confirma.",
-        "growth-improvement": "Segui crecimiento, consumo, empleo y revisiones oficiales para ver si la mejora gana consistencia.",
-        "crypto-liquidity": "Segui BTC, ETH, tasas reales, dolar y cambios regulatorios para medir si la noticia se traslada al mercado.",
-      }[item.signalType],
+      happened: pickVariant(`${seed}|happened`, {
+        "central-bank-shift": [
+          `${sourceLabel} movio la conversacion hacia tasas, bonos y valuaciones con una senal de politica que el mercado no puede ignorar.`,
+          `El frente monetario vuelve al centro tras una actualizacion de ${sourceLabel} con impacto rapido sobre expectativas de tasas.`,
+          `${sourceLabel} dejo una senal que puede cambiar el precio del dinero, el tipo de cambio y el apetito por riesgo.`,
+        ],
+        "inflation-pressure": [
+          `${sourceLabel} suma una lectura de precios o expectativas que aprieta otra vez el escenario macro para ${countryLabel}.`,
+          `La ultima señal de ${sourceLabel} vuelve a poner presion sobre inflacion, tasas y retorno real en ${countryLabel}.`,
+          `${sourceLabel} trae un dato o una referencia que obliga a recalibrar la lectura de inflacion en ${countryLabel}.`,
+        ],
+        "currency-stress": [
+          `${sourceLabel} deja a la moneda bajo presion en un punto sensible para inflacion importada y activos en moneda dura.`,
+          `El foco cambiario vuelve con fuerza tras una senal de ${sourceLabel} que complica la estabilidad nominal.`,
+          `${sourceLabel} empuja una lectura mas defensiva sobre FX y condiciones financieras en ${countryLabel}.`,
+        ],
+        "debt-risk": [
+          `${sourceLabel} vuelve a poner sobre la mesa refinanciacion, fragilidad fiscal y spreads soberanos.`,
+          `La historia pasa por deuda y acceso al financiamiento, dos variables que el mercado castiga rapido cuando se deterioran.`,
+          `${sourceLabel} reabre dudas sobre rollover, costo financiero y sostenibilidad fiscal en ${countryLabel}.`,
+        ],
+        "growth-slowdown": [
+          `${sourceLabel} sugiere que la actividad pierde impulso y obliga a moderar la lectura sobre crecimiento en ${countryLabel}.`,
+          `El tono de ${sourceLabel} apunta a una economia con menos traccion de la que descontaba el mercado.`,
+          `${sourceLabel} deja una señal menos favorable para actividad, empleo y demanda en ${countryLabel}.`,
+        ],
+        "growth-improvement": [
+          `${sourceLabel} deja una lectura mas constructiva para actividad y demanda en ${countryLabel}.`,
+          `La nueva señal de ${sourceLabel} mejora el tono sobre crecimiento y ciclo en ${countryLabel}.`,
+          `${sourceLabel} aporta un dato que hace menos defensiva la lectura de mercado sobre ${countryLabel}.`,
+        ],
+        "crypto-liquidity": [""],
+      }[item.signalType] as readonly string[]),
+      why: pickVariant(`${seed}|why`, {
+        "central-bank-shift": [
+          "Cuando cambia la señal monetaria, el ajuste suele verse primero en yields, divisas y multiplos.",
+          "Una sorpresa de politica monetaria reordena rapido el mapa de tasas, FX y valuaciones.",
+          "Las decisiones de banco central cambian descuento, costo financiero y posicionamiento casi de inmediato.",
+        ],
+        "inflation-pressure": [
+          "La inflacion pesa porque redefine el recorrido esperado de tasas, margenes y retorno real.",
+          "Si el frente de precios no afloja, el mercado tiende a endurecer su lectura de tasas y valuaciones.",
+          "Los activos sienten esta historia cuando sube la probabilidad de tasas altas por mas tiempo.",
+        ],
+        "currency-stress": [
+          "La presion cambiaria suele filtrarse a inflacion, deuda dura y percepcion de riesgo pais.",
+          "Cuando el tipo de cambio entra en tension, el mercado mira pass-through, reservas y financiamiento externo.",
+          "FX importa porque puede empeorar el frente nominal y cerrar margen de maniobra para politica economica.",
+        ],
+        "debt-risk": [
+          "El mercado castiga rapido las dudas de refinanciacion porque tocan moneda, spreads y acceso a capital.",
+          "Cuando sube el riesgo de deuda, la lectura cambia para bonos, tipo de cambio y apetito por riesgo.",
+          "La deuda deja de ser un tema de balance y pasa a ser un tema de precio cuando el rollover se complica.",
+        ],
+        "growth-slowdown": [
+          "Una desaceleracion cambia expectativas de utilidades, credito y toma de riesgo antes de reflejarse por completo en los datos.",
+          "El crecimiento pierde peso en la valuacion cuando el mercado empieza a revisar baja demanda y actividad.",
+          "Menor traccion de actividad suele traducirse rapido en una lectura mas defensiva para acciones y credito.",
+        ],
+        "growth-improvement": [
+          "Si la mejora se sostiene, el mercado puede revisar al alza demanda, utilidades y tolerancia al riesgo.",
+          "Una mejor lectura de actividad ayuda a destrabar una vision menos defensiva sobre el ciclo.",
+          "El crecimiento importa cuando deja de ser promesa y empieza a respaldar activos mas ciclicos.",
+        ],
+        "crypto-liquidity": [""],
+      }[item.signalType] as readonly string[]),
+      watch: pickVariant(`${seed}|watch`, {
+        "central-bank-shift": [
+          "Segui tasas, rendimientos, dolar y sensibilidad de acciones locales para ver si el cambio se consolida.",
+          "La validacion pasa por yields, FX y respuesta de equity al nuevo tono monetario.",
+          "Lo que importa ahora es si el mercado sostiene la nueva lectura en tasas y tipo de cambio.",
+        ],
+        "inflation-pressure": [
+          "Segui inflacion, tasas y expectativas para ver si la presion es transitoria o mas persistente.",
+          "La confirmacion llega si se endurecen tasas, rendimientos reales y lectura sobre margenes.",
+          "Conviene mirar proximos datos de precios y la reaccion de bonos para medir continuidad.",
+        ],
+        "currency-stress": [
+          "Segui FX, inflacion importada y señales de tension financiera para medir si el shock escala.",
+          "La clave ahora es ver reservas, tipo de cambio y costo de cobertura para juzgar la profundidad del movimiento.",
+          "Mira moneda, spreads y pass-through para saber si el episodio se vuelve mas sistemico.",
+        ],
+        "debt-risk": [
+          "Segui spreads, rollover, subastas y titulares de financiamiento para detectar si el deterioro sigue.",
+          "La validacion pasa por costo de deuda, acceso al mercado y comportamiento de la moneda.",
+          "Conviene mirar refinanciacion, curva soberana y apetito externo en las proximas ruedas.",
+        ],
+        "growth-slowdown": [
+          "Segui actividad, empleo y guias oficiales para ver si la desaceleracion gana consistencia.",
+          "La confirmacion deberia aparecer en datos de demanda, empleo y revisiones de crecimiento.",
+          "Mira indicadores de actividad y tono corporativo para validar si el enfriamiento se amplia.",
+        ],
+        "growth-improvement": [
+          "Segui actividad, consumo y empleo para ver si la mejora se amplia mas alla del titular inicial.",
+          "La validacion llega con mejores datos duros y una respuesta mas firme de activos ciclicos.",
+          "Conviene seguir revisiones oficiales, demanda interna y tono del mercado para ver si la mejora se sostiene.",
+        ],
+        "crypto-liquidity": [""],
+      }[item.signalType] as readonly string[]),
     };
   }
 
@@ -1814,7 +2119,7 @@ function toNewsItem(sourceId: NewsSourceId, entry: ParsedFeedEntry): NewsItem {
         ? classifyInvestingEntry(entry)
         : sourceId === "coindesk"
           ? classifyCoinDeskEntry(entry)
-          : sourceId === "cointelegraph" || sourceId === "cryptonews" || sourceId === "messari"
+          : isDedicatedCryptoRssSource(sourceId)
             ? classifyCryptoRssEntry(entry)
           : sourceId === "freeCryptoNews"
             ? classifyFreeCryptoNewsEntry(entry)
@@ -1889,7 +2194,7 @@ function dedupeRssEntries(entries: ParsedFeedEntry[]) {
   );
 }
 
-async function fetchCryptoRssFeed(sourceId: "cointelegraph" | "cryptonews" | "messari") {
+async function fetchCryptoRssFeed(sourceId: NewsSourceId) {
   const source = newsSourceDefinitions[sourceId];
   if (!source.feedUrl) return [] as NewsItem[];
 
@@ -2182,7 +2487,7 @@ async function fetchSource(sourceId: NewsSourceId) {
     return fetchInvestingNews();
   }
 
-  if (sourceId === "cointelegraph" || sourceId === "cryptonews" || sourceId === "messari") {
+  if (isDedicatedCryptoRssSource(sourceId)) {
     return fetchCryptoRssFeed(sourceId);
   }
 
@@ -2357,19 +2662,7 @@ function areLikelyDuplicateStories(left: NewsItem, right: NewsItem) {
 }
 
 export function dedupeNews(items: NewsItem[]) {
-  const ordered = sortNewsByPublishedAt(items);
-  const byCanonicalOrUrl = uniqueBy(
-    ordered,
-    (item) => item.canonicalUrl || item.url || `${item.sourceId}:${item.slug}`,
-  );
-  const selected: NewsItem[] = [];
-
-  for (const item of byCanonicalOrUrl) {
-    if (selected.some((selectedItem) => areLikelyDuplicateStories(selectedItem, item))) continue;
-    selected.push(item);
-  }
-
-  return selected;
+  return collapseCryptoEditorialDuplicates(dedupeFeed(items).deduped_articles);
 }
 
 function takeUniqueDiverse(candidates: NewsItem[], limit: number, maxPerSource = 2) {
@@ -2379,7 +2672,12 @@ function takeUniqueDiverse(candidates: NewsItem[], limit: number, maxPerSource =
 
   for (const item of candidates) {
     if (selected.some((selectedItem) => selectedItem.id === item.id)) continue;
-    if (selected.some((selectedItem) => areLikelyDuplicateStories(selectedItem, item))) continue;
+    if (
+      item.clusterId &&
+      selected.some((selectedItem) => selectedItem.clusterId && selectedItem.clusterId === item.clusterId)
+    ) {
+      continue;
+    }
     const sourceCount = perSource.get(item.sourceId) ?? 0;
     if (sourceCount >= maxPerSource) continue;
 
@@ -2642,45 +2940,39 @@ function prioritizeCryptoStories(candidates: NewsItem[], limit: number) {
 export const getMacroNews = cache(async function getMacroNews() {
   const sourceIds = Object.keys(newsSourceDefinitions) as NewsSourceId[];
   const settled = await Promise.all(sourceIds.map((sourceId) => fetchSource(sourceId)));
-
-  return sortNewsByPublishedAt(dedupeNews(settled.flat())).slice(0, 120);
+  const result = dedupeFeed(settled.flat());
+  console.info("[news-dedupe]", JSON.stringify(result.stats));
+  return sortNewsByPublishedAt(collapseCryptoEditorialDuplicates(result.deduped_articles)).slice(0, 120);
 });
 
 export const getNewsSections = cache(async function getNewsSections() {
   const items = await getMacroNews();
+  const macroSectionItems = items.filter((item) => shouldKeepOutsideCryptoSection(item));
+  const latestMixedItems = items.filter((item) => shouldKeepInLatestMixedSection(item));
   const fillSection = (sectionId: string, primary: NewsItem[], secondary: NewsItem[], limit: number, maxPerSource = 3) =>
     prioritizeSectionStories(sectionId, [...primary, ...secondary], limit, maxPerSource);
 
   const sections: NewsSection[] = [
     {
       id: "latest",
-      title: { en: "Latest mixed stories", es: "Ultimas noticias mixtas" },
-      description: {
-        en: "A broader mixed feed across all connected sources so you can see more material without losing source variety.",
-        es: "Un feed mas amplio y mixto entre todas las fuentes conectadas para ver mas material sin perder variedad de canales.",
-      },
-      items: prioritizeSectionStories("latest", items, 16, 4),
+      title: newsSectionCopy.latest.title,
+      description: newsSectionCopy.latest.description,
+      items: prioritizeSectionStories("latest", latestMixedItems, 16, 4),
     },
     {
       id: "top",
-      title: { en: "Top macro stories", es: "Principales historias macro" },
-      description: {
-        en: "The highest-priority stories across inflation, rates, FX, debt, and growth.",
-        es: "Las historias de mayor prioridad en inflacion, tasas, FX, deuda y crecimiento.",
-      },
-      items: prioritizeSectionStories("top", items.filter((item) => item.importance === "high"), 8, 3),
+      title: newsSectionCopy.top.title,
+      description: newsSectionCopy.top.description,
+      items: prioritizeSectionStories("top", macroSectionItems.filter((item) => item.importance === "high"), 8, 3),
     },
     {
       id: "central-banks",
-      title: { en: "Central banks", es: "Bancos centrales" },
-      description: {
-        en: "Policy moves and communication that can quickly reprice rates, FX, and equities.",
-        es: "Movimientos de politica y comunicacion que pueden repricing rapido de tasas, FX y acciones.",
-      },
+      title: newsSectionCopy["central-banks"].title,
+      description: newsSectionCopy["central-banks"].description,
       items: fillSection(
         "central-banks",
-        items.filter((item) => item.signalType === "central-bank-shift"),
-        items.filter(
+        macroSectionItems.filter((item) => item.signalType === "central-bank-shift"),
+        macroSectionItems.filter(
           (item) =>
             item.topics.includes("central-banks") ||
             item.topics.includes("forex") ||
@@ -2692,15 +2984,12 @@ export const getNewsSections = cache(async function getNewsSections() {
     },
     {
       id: "inflation",
-      title: { en: "Inflation watch", es: "Vigilancia de inflacion" },
-      description: {
-        en: "Price-pressure stories that matter for rate expectations and real returns.",
-        es: "Historias de precios que importan para expectativas de tasas y retornos reales.",
-      },
+      title: newsSectionCopy.inflation.title,
+      description: newsSectionCopy.inflation.description,
       items: fillSection(
         "inflation",
-        items.filter((item) => item.signalType === "inflation-pressure"),
-        items.filter(
+        macroSectionItems.filter((item) => item.signalType === "inflation-pressure"),
+        macroSectionItems.filter(
           (item) =>
             item.topics.includes("inflation") ||
             item.topics.includes("energy") ||
@@ -2712,15 +3001,12 @@ export const getNewsSections = cache(async function getNewsSections() {
     },
     {
       id: "debt",
-      title: { en: "Debt risk", es: "Riesgo de deuda" },
-      description: {
-        en: "Debt and refinancing stories that can change sovereign and currency risk quickly.",
-        es: "Historias de deuda y refinanciacion que pueden cambiar rapido el riesgo soberano y cambiario.",
-      },
+      title: newsSectionCopy.debt.title,
+      description: newsSectionCopy.debt.description,
       items: fillSection(
         "debt",
-        items.filter((item) => item.signalType === "debt-risk"),
-        items.filter(
+        macroSectionItems.filter((item) => item.signalType === "debt-risk"),
+        macroSectionItems.filter(
           (item) =>
             item.topics.includes("debt") ||
             item.relatedIndicators.includes("externalDebt") ||
@@ -2732,15 +3018,12 @@ export const getNewsSections = cache(async function getNewsSections() {
     },
     {
       id: "forex",
-      title: { en: "Forex pressure", es: "Presion forex" },
-      description: {
-        en: "Currency stories that matter for imported inflation and hard-currency returns.",
-        es: "Historias de monedas que importan para inflacion importada y retornos en moneda dura.",
-      },
+      title: newsSectionCopy.forex.title,
+      description: newsSectionCopy.forex.description,
       items: fillSection(
         "forex",
-        items.filter((item) => item.signalType === "currency-stress"),
-        items.filter(
+        macroSectionItems.filter((item) => item.signalType === "currency-stress"),
+        macroSectionItems.filter(
           (item) =>
             item.topics.includes("forex") ||
             item.assetClasses.includes("forex") ||
@@ -2752,11 +3035,8 @@ export const getNewsSections = cache(async function getNewsSections() {
     },
     {
       id: "crypto",
-      title: { en: "Crypto", es: "Crypto" },
-      description: {
-        en: "Bitcoin, Ethereum, stablecoins, regulation, ETFs, exchanges, and digital-asset flows.",
-        es: "Bitcoin, Ethereum, stablecoins, regulacion, ETFs, exchanges y flujos de activos digitales.",
-      },
+      title: newsSectionCopy.crypto.title,
+      description: newsSectionCopy.crypto.description,
       items: prioritizeCryptoStories(
         items.filter(
           (item) =>
@@ -2767,6 +3047,11 @@ export const getNewsSections = cache(async function getNewsSections() {
               item.sourceId === "cointelegraph" ||
               item.sourceId === "cryptonews" ||
               item.sourceId === "messari" ||
+              item.sourceId === "theblock" ||
+              item.sourceId === "beincrypto" ||
+              item.sourceId === "blockworks" ||
+              item.sourceId === "bitcoinmagazine" ||
+              item.sourceId === "utoday" ||
               item.sourceId === "freeCryptoNews" ||
               item.sourceId === "marketaux" ||
               item.sourceId === "investing"),
@@ -2781,7 +3066,8 @@ export const getNewsSections = cache(async function getNewsSections() {
 
 export async function getNewsByTopic(topic: NewsTopic) {
   const items = await getMacroNews();
-  const direct = items.filter((item) => item.topics.includes(topic));
+  const topicItems = topic === "crypto" ? items : items.filter((item) => shouldKeepOutsideCryptoSection(item));
+  const direct = topicItems.filter((item) => item.topics.includes(topic));
   if (direct.length >= 6) {
     return prioritizeTopicStories(topic, direct, 12);
   }
@@ -2818,6 +3104,11 @@ export async function getNewsByTopic(topic: NewsTopic) {
       item.sourceId === "cointelegraph" ||
       item.sourceId === "cryptonews" ||
       item.sourceId === "messari" ||
+      item.sourceId === "theblock" ||
+      item.sourceId === "beincrypto" ||
+      item.sourceId === "blockworks" ||
+      item.sourceId === "bitcoinmagazine" ||
+      item.sourceId === "utoday" ||
       item.sourceId === "freeCryptoNews",
     energy: (item) =>
       item.topics.includes("energy") ||
@@ -2842,7 +3133,7 @@ export async function getNewsByTopic(topic: NewsTopic) {
       item.summary.toLowerCase().includes("payroll"),
   };
 
-  const related = items.filter(
+  const related = topicItems.filter(
     (item) =>
       !direct.some((directItem) => directItem.id === item.id) &&
       fallbackMatchers[topic](item),
